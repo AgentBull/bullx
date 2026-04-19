@@ -1,0 +1,32 @@
+[package]
+name = "bullx_ext"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust library for BullX extensions"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+rustler = "0.37.3"
+mimalloc = "0.1.48"
+blake3 = "1.8.4"
+bs58 = "0.5.1"
+hex = "0.4.3"
+rand = { version = "0.10.1", features = ["sys_rng"] }
+rand_chacha = "0.10.0"
+
+
+
+[dependencies.uuid]
+version = "1.23.1"
+features = ["v4","v7","fast-rng"]
+
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.dev]
+incremental = true

@@ -1,0 +1,925 @@
+# RFC 0001: Global Dynamic Configuration
+
+- **Status**: Draft
+- **Author**: Boris Ding
+- **Created**: 2026-04-19
+
+## 1. Purpose
+
+Introduce a single, global configuration model for BullX that covers both:
+
+- the existing bootstrap/config-script layer under `config/`
+- the new runtime dynamic configuration layer used from application code
+
+The resulting system must be usable from any part of BullX: `BullXWeb`, `Gateway`, `Runtime`, `Brain`, `Skills`, and any future namespace under `BullX`.
+
+The system introduced by this RFC must satisfy the following runtime properties:
+
+- Values resolve in this order: **PostgreSQL override -> OS environment -> default**.
+- Invalid higher-priority values are **skipped**, not fatal: if a database value cannot be cast **or fails its declared Zoi constraint**, BullX falls back to the OS environment; if the OS environment value is also invalid or absent, BullX falls back to the default.
+- Reads are served from **ETS-backed cache**, not direct database queries.
+- Writes explicitly refresh the cache; **PostgreSQL `LISTEN/NOTIFY` is not used**.
+- `.env` files are supported for bootstrapping the OS environment layer without changing the priority model above.
+- Runtime settings may declare **Zoi schemas** to constrain legal values beyond primitive type casting.
+
+This RFC introduces the configuration infrastructure itself. It does **not** attempt to migrate every existing BullX setting onto the new runtime system in one pass, but it does require that the current `config/*.exs` files become part of the same managed configuration story rather than remaining an unrelated side path.
+
+## 2. Context
+
+BullX currently has Phoenix's default `config/*.exs` layout:
+
+- `config/config.exs`, `config/dev.exs`, `config/test.exs`, `config/prod.exs`, and `config/runtime.exs` together define the bootstrap behavior of the application.
+- `config/runtime.exs` reads selected OS environment variables during boot.
+- There is no project-level configuration library, no runtime cache, no persisted config table, and no unified API for changing config at runtime.
+- Environment parsing logic is currently embedded directly in config scripts instead of being managed by a shared BullX-owned abstraction.
+
+This RFC must also fit BullX's architectural constraints from [`AGENTS.md`](../../AGENTS.md):
+
+- PostgreSQL is the system of record.
+- Process-local state must be reconstructible on restart.
+- Configuration is **cross-cutting infrastructure**, not owned by a single subsystem.
+
+That last point is load-bearing. This RFC does **not** place configuration under `BullX.Runtime`, `BullX.Gateway`, or `BullXWeb`; it introduces `BullX.Config` as root-level shared infrastructure, similar in reach to `BullX.Repo`.
+
+## 3. Design Decisions
+
+### 3.1 One configuration system, two execution phases
+
+BullX needs two different configuration paths:
+
+1. **Bootstrap configuration**
+
+   These values are needed before `BullX.Repo` and before the runtime config cache exists. Examples:
+
+   - `BullX.Repo` connection settings
+   - `BullXWeb.Endpoint` boot settings
+   - `SECRET_KEY_BASE`
+   - `PORT`
+   - `PHX_SERVER`
+
+   Bootstrap configuration remains physically expressed through `config/*.exs`, because Elixir and Phoenix expect that boot path. However, after this RFC those files are no longer ad hoc; they become thin wrappers around a shared BullX-owned helper loaded from `config/support/bootstrap.exs`.
+
+   Bootstrap configuration is allowed to read from `.env`-backed OS environment variables, but it does **not** read from PostgreSQL because the Repo has not started yet.
+
+2. **Runtime dynamic configuration**
+
+   These values are used after the application is booted and may be changed without restarting the node. They are the subject of this RFC and will be declared through `BullX.Config`.
+
+This split is intentional. Any setting that is required to start the Repo or Phoenix endpoint is out of scope for the PostgreSQL-backed layer.
+
+This RFC therefore treats the existing `config/*.exs` files as the **bootstrap branch** of BullX's unified configuration system, not as a separate legacy mechanism.
+
+### 3.2 Existing `config/*.exs` are brought under BullX-owned management
+
+After this RFC, the five existing config scripts remain in place:
+
+- `config/config.exs`
+- `config/dev.exs`
+- `config/test.exs`
+- `config/prod.exs`
+- `config/runtime.exs`
+
+But they must no longer each own their own environment parsing logic.
+
+Instead, all environment-sensitive behavior inside those files must go through a shared helper module loaded from `config/support/bootstrap.exs`, tentatively named `BullX.Config.Bootstrap`.
+
+That helper owns:
+
+- dotenv file selection and loading
+- typed environment parsing for bootstrap variables
+- shared conventions such as environment-name mapping and precedence
+
+This is the mechanism by which the existing Phoenix/Ecto config files become part of the unified config story.
+
+Static compile-time literals that are not deployment-specific may remain directly in config files. Examples include:
+
+- esbuild version and args
+- tailwind version and args
+- live reload regexes
+- static `force_ssl` structure in `config/prod.exs`
+
+The key rule is narrower and more useful than "move every literal out of config files":
+
+- if a value is environment-derived, deployment-specific, duplicated across config files, or parsed from OS env, it must be routed through the shared bootstrap helper
+- if a value is purely static compile-time build metadata, it may stay inline
+
+### 3.3 Exact precedence for runtime dynamic configuration
+
+For all runtime dynamic variables declared through the new `BullX.Config` DSL, the resolution order is:
+
+1. `app_configs` row in PostgreSQL, cached in ETS
+2. OS environment variable
+3. default declared in code
+
+There is **no** application-config fallback layer in between. BullX must not silently reintroduce Phoenix compile-time config as an extra priority level for runtime dynamic variables.
+
+Concretely, the new DSL must generate declarations with:
+
+- `binding_order: [BullX.Config.DatabaseBinding, BullX.Config.SystemBinding]`
+- `binding_skip: [:system, :config]`
+- `cached: false`
+
+These defaults are deliberate:
+
+- `BullX.Config.DatabaseBinding` makes PostgreSQL the highest-priority runtime source.
+- `BullX.Config.SystemBinding` replaces Skogsra's built-in `:system` binding so BullX can skip invalid environment values instead of treating them as terminal failures.
+- `binding_skip: [:system, :config]` removes Skogsra's built-in `:system` and `:config` layers to preserve the exact 3-level model.
+- `cached: false` disables Skogsra's `:persistent_term` cache for runtime dynamic variables because BullX's authoritative hot-reload cache is ETS.
+
+### 3.4 Validation model: cast first, then Zoi
+
+BullX runtime dynamic configuration needs two distinct validation layers:
+
+1. **Type casting**
+
+   Skogsra is responsible for turning raw input values into Elixir values of the declared type, for example:
+
+   - `"42"` -> `42` for `:integer`
+   - `"true"` -> `true` for `:boolean`
+   - `"https://..."` -> a validated custom type if a Skogsra type module is used
+
+2. **Value constraints**
+
+   Zoi is responsible for constraining the resulting Elixir value to the legal domain for that setting, for example:
+
+   - integer range checks such as `1..65_535`
+   - enum-like value sets
+   - URL shape and hostname requirements
+   - list/map structure constraints
+   - custom refinement rules
+
+For runtime dynamic settings, the validation pipeline is:
+
+```text
+raw source value
+-> Skogsra.Type.cast/2
+-> Zoi.parse/2 when a zoi schema is declared
+-> accept current source or fall through to next source
+```
+
+This distinction matters:
+
+- Skogsra answers "can this source be interpreted as the right Elixir type?"
+- Zoi answers "is this typed value legal for this BullX setting?"
+
+### 3.5 Why BullX needs custom Skogsra bindings
+
+Skogsra's extension point for custom resolution order is `Skogsra.Binding`, not a custom "provider" behaviour. This RFC therefore uses two BullX-specific bindings:
+
+- `BullX.Config.DatabaseBinding`
+- `BullX.Config.SystemBinding`
+
+Both bindings must cast values before returning them:
+
+- Database binding reads the raw string from ETS and calls `Skogsra.Type.cast(env, raw)`.
+- System binding constructs the OS env var name via `Skogsra.Env.gen_namespace/gen_app_name/gen_keys` (because `os_env/1` only generates a name when `:system` appears in `binding_order`) and reads it with `System.get_env/1`; it also calls `Skogsra.Type.cast(env, raw)`.
+
+If casting succeeds, the binding must additionally apply any declared Zoi schema. If either casting or Zoi validation fails, the binding returns `nil` (the Skogsra convention for "not found, try next binding") so Skogsra continues to the next binding or the default. This is the mechanism that makes "invalid value -> skip -> fallback" deterministic for both database and OS environment inputs.
+
+### 3.6 Why BullX disables Skogsra caching for runtime values
+
+Skogsra's default cache uses `:persistent_term`, which is optimized for fast reads but expensive reloads. That works against this RFC's requirements:
+
+- reads should go through BullX-owned ETS cache,
+- hot reload should be cheap and predictable,
+- write-path invalidation should not require `:persistent_term` churn for every variable.
+
+Therefore, runtime dynamic variables in BullX must use `cached: false`, while BullX's own ETS cache stores only raw database overrides.
+
+### 3.7 `.env` files belong to the OS-environment layer, not a new priority layer
+
+This RFC does **not** add ".env" as a fourth runtime priority. Instead:
+
+- `.env` files are loaded at the top of `config/runtime.exs`
+- the resulting values are merged into the process environment
+- runtime dynamic variables still see them only through `BullX.Config.SystemBinding`
+
+This preserves the runtime model:
+
+- database
+- OS environment
+- default
+
+while still supporting `.env`, `.env.local`, `.env.dev`, `.env.test`, and `.env.prod`.
+
+At the bootstrap phase, the same dotenv load order is also used by the shared config helper in `config/support/bootstrap.exs`, so the current `config/*.exs` files and the runtime dynamic layer observe one coherent OS-environment view.
+
+## 4. Scope
+
+### 4.1 In scope
+
+- Add the dependencies needed for runtime dynamic config and dotenv support.
+- Normalize the existing `config/*.exs` files so they participate in the unified BullX configuration model through a shared bootstrap helper.
+- Add a new `app_configs` table.
+- Add root-level `BullX.Config` infrastructure under `lib/bullx/config/`.
+- Add a top-level `BullX.Config.Supervisor` under `BullX.Application`.
+- Add a config-script helper under `config/support/` for dotenv loading and typed bootstrap env parsing.
+- Add Zoi-backed value constraints for both runtime dynamic settings and bootstrap env parsing.
+- Add test coverage for:
+  - database > env > default precedence
+  - invalid database value falling back to env/default
+  - invalid environment value falling back to default
+  - Zoi-invalid database or env values falling back correctly for runtime dynamic settings
+  - explicit cache refresh on write/delete
+  - dotenv file merge order
+  - bootstrap helper behavior used by the existing config scripts, including Zoi validation
+- Add developer documentation for `.env` usage and the new runtime config model.
+
+### 4.2 Out of scope
+
+- A control-plane UI for browsing or editing config values.
+- Secret encryption, KMS integration, or any other secret-management feature.
+- PostgreSQL `LISTEN/NOTIFY`.
+- Cross-node cache invalidation across a multi-node BullX cluster. BullX does not support multi-node deployments in this RFC; single-node operation is the only supported topology. Multi-node is deferred to a future RFC.
+- Migrating every existing BullX setting to the new runtime DSL.
+- A metadata catalog of all editable keys for operators.
+- A full declaration registry that lets arbitrary raw database writes be validated against all known setting schemas before persistence.
+
+The low-level writer in this RFC stores raw strings. Type casting and Zoi validation happen on **read** through the runtime resolution pipeline, and on **bootstrap parse** through the shared config helper.
+
+## 5. Dependencies
+
+`mix.exs` is modified as follows:
+
+- **Add** `{:skogsra, "~> 2.5"}`
+- **Add** `{:dotenvy, "~> 1.1"}`
+- **Add** `{:zoi, "~> 0.17"}`
+- **Keep** the existing `:ecto_sql` and `:postgrex` entries as-is
+
+This RFC must not downgrade or duplicate BullX's existing Ecto/PostgreSQL dependencies. The project already depends on `:ecto_sql` and `:postgrex`.
+
+## 6. Target Structure
+
+After this RFC, the repo contains the following new or modified files:
+
+```text
+lib/bullx/
+├── application.ex                        (MODIFIED)
+├── config.ex                             (NEW — shared DSL + facade)
+└── config/
+    ├── app_config.ex                     (NEW — Ecto schema)
+    ├── cache.ex                          (NEW — ETS-backed cache process)
+    ├── database_binding.ex               (NEW — PostgreSQL/ETS Skogsra binding)
+    ├── supervisor.ex                     (NEW — top-level config supervisor)
+    ├── system_binding.ex                 (NEW — strict OS-env Skogsra binding)
+    ├── validation.ex                     (NEW — shared cast + Zoi validation helpers)
+    └── writer.ex                         (NEW — persistence + refresh API)
+
+config/
+├── config.exs                            (MODIFIED)
+├── dev.exs                               (MODIFIED)
+├── prod.exs                              (MODIFIED)
+├── runtime.exs                           (MODIFIED)
+├── test.exs                              (MODIFIED)
+└── support/
+    └── bootstrap.exs                     (NEW — shared bootstrap helper for config scripts)
+
+mix.exs                                   (MODIFIED)
+.gitignore                                (MODIFIED)
+.env.example                              (NEW)
+
+priv/repo/migrations/
+└── <timestamp>_create_app_configs.exs    (NEW)
+
+test/bullx/
+├── application_test.exs                  (MODIFIED)
+└── config/
+    ├── cache_test.exs                    (NEW)
+    ├── dotenv_test.exs                   (NEW)
+    ├── precedence_test.exs               (NEW)
+    └── writer_test.exs                   (NEW)
+
+test/support/bullx/config/
+└── test_settings.ex                      (NEW — test-only declaration module)
+
+README.md                                 (MODIFIED)
+README.zh-Hans.md                         (MODIFIED)
+README.ja.md                              (MODIFIED)
+```
+
+No Phoenix UI file under `lib/bullx_web/` is touched by this RFC.
+
+The five existing files under `config/` remain first-class citizens; they are not deleted or bypassed.
+
+## 7. Module Specifications
+
+### 7.1 `BullX.Config`
+
+`lib/bullx/config.ex` is the global public entrypoint for runtime dynamic configuration.
+
+It has three responsibilities:
+
+1. Provide the shared DSL for declaring BullX runtime settings.
+2. Expose a small facade over write/refresh operations.
+3. Serve as the root namespace for future domain-specific config modules such as `BullX.Config.Gateway`, `BullX.Config.Runtime`, or `BullX.Config.Web`.
+
+The module shape should be:
+
+```elixir
+defmodule BullX.Config do
+  @moduledoc """
+  Global runtime configuration infrastructure shared by all BullX modules.
+
+  Runtime settings declared through this namespace resolve in the following
+  order: PostgreSQL override, OS environment, then code default.
+  """
+
+  defmacro __using__(_opts) do
+    quote do
+      use Skogsra
+      import BullX.Config, only: [bullx_env: 2, bullx_env: 3]
+    end
+  end
+
+  defmacro bullx_env(function_name, keys, opts \\ []) do
+    merged_opts =
+      Keyword.merge(
+        [
+          binding_order: [BullX.Config.DatabaseBinding, BullX.Config.SystemBinding],
+          binding_skip: [:system, :config],
+          cached: false
+        ],
+        opts
+      )
+
+    quote bind_quoted: [
+            function_name: function_name,
+            keys: keys,
+            merged_opts: merged_opts
+          ] do
+      app_env(function_name, :bullx, keys, merged_opts)
+    end
+  end
+
+  def put(key, value), do: BullX.Config.Writer.put(key, value)
+  def delete(key), do: BullX.Config.Writer.delete(key)
+  def refresh(key), do: BullX.Config.Cache.refresh(key)
+  def refresh_all, do: BullX.Config.Cache.refresh_all()
+end
+```
+
+Important constraints:
+
+- This module is a **shared root namespace**, not a subsystem module.
+- Future runtime config declaration modules must `use BullX.Config`, not raw `use Skogsra`.
+- The DSL must support an optional `zoi:` option whose value is a Zoi schema or a zero-arity function returning a Zoi schema.
+- This RFC does **not** add production settings yet; end-to-end behavior is proven through a test-only declaration module in `test/support`.
+
+Example declaration:
+
+```elixir
+defmodule BullX.Config.Runtime do
+  use BullX.Config
+
+  @envdoc false
+  bullx_env :max_upload_size, :max_upload_size,
+    type: :integer,
+    default: 10_485_760,
+    zoi: Zoi.integer() |> Zoi.min(1) |> Zoi.max(104_857_600)
+end
+```
+
+### 7.2 `config/support/bootstrap.exs`
+
+Add `config/support/bootstrap.exs`, loaded via `Code.require_file/2` from the existing config scripts.
+
+This file defines the bootstrap helper module, tentatively:
+
+```elixir
+defmodule BullX.Config.Bootstrap do
+  def load_dotenv!(opts)
+  def env_string(name, default \\ nil)
+  def env_integer(name, default \\ nil)
+  def env_boolean(name, default \\ nil)
+  def env!(name, parser)
+  def validate!(value, opts)
+  def profile_name(config_env)
+end
+```
+
+The exact helper API may differ slightly, but the responsibilities are fixed:
+
+- load the appropriate `.env*` files
+- map `config_env()` to BullX dotenv profile names
+- provide typed env parsing for bootstrap values
+- support optional `zoi:` validation for bootstrap values
+- centralize all direct `System.get_env/1` access used by `config/*.exs`
+
+Important constraint:
+
+- after this RFC, config scripts must not contain ad hoc `System.get_env/1` lookups or duplicated parsing logic
+- bootstrap env lookups in `config/*.exs` must go through `BullX.Config.Bootstrap`
+
+This requirement is what "support existing config files under unified config management" means in practice.
+
+Bootstrap helper semantics:
+
+- if a required bootstrap value is missing, it raises
+- if a bootstrap value is present but fails parsing or Zoi validation, it raises with a contextual error
+- if an optional bootstrap value is missing, the declared default is used
+
+### 7.3 `BullX.Config.Supervisor`
+
+`lib/bullx/config/supervisor.ex` is a normal top-level supervisor with exactly one child in this RFC:
+
+- `BullX.Config.Cache`
+
+Its presence is deliberate even with a single child, because configuration is global infrastructure and will likely gain additional workers later.
+
+### 7.4 `BullX.Config.Validation`
+
+`lib/bullx/config/validation.ex` centralizes post-cast validation so the same rules are applied by:
+
+- `BullX.Config.DatabaseBinding`
+- `BullX.Config.SystemBinding`
+- `BullX.Config.Bootstrap`
+
+Required responsibilities:
+
+- extract `:zoi` metadata from a Skogsra env or caller opts
+- normalize either a direct Zoi schema or a zero-arity function returning a schema
+- run `Zoi.parse/2`
+- return `{:ok, value}` on success
+- return `{:error, :invalid}` for runtime fallback paths
+- raise a descriptive error for bootstrap fail-fast paths
+
+This module exists to prevent the same Zoi resolution and error-shaping logic from being duplicated across bindings and config scripts.
+
+**Default value and Zoi:** Skogsra returns the declared `default:` value directly when all bindings fail, without passing it through Zoi. A `default:` that violates the declared Zoi constraint is therefore a silent coding error — it will be returned as-is and will not be caught at runtime. Declaration authors are responsible for ensuring that the default satisfies the constraint. There is no compile-time enforcement in this RFC.
+
+### 7.5 `BullX.Config.AppConfig`
+
+`lib/bullx/config/app_config.ex` defines the persisted row shape:
+
+```elixir
+defmodule BullX.Config.AppConfig do
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  @primary_key {:key, :string, autogenerate: false}
+  schema "app_configs" do
+    field :value, :string
+    timestamps(type: :utc_datetime)
+  end
+
+  def changeset(config, attrs) do
+    config
+    |> cast(attrs, [:key, :value])
+    |> validate_required([:key, :value])
+  end
+end
+```
+
+The migration creates:
+
+- table name: `app_configs`
+- primary key: `key`, type `:text`
+- `value`, type `:text`, `null: false`
+- `inserted_at` and `updated_at`, type `:utc_datetime`
+
+The migration must be generated via `mix ecto.gen.migration create_app_configs`.
+
+**Ash compatibility constraint:** `BullX.Config.AppConfig` must remain a plain Ecto schema and must never be converted into an Ash resource. `BullX.Config.Cache` starts immediately after `BullX.Repo`, before any Ash domain is initialized. If `app_configs` were an Ash resource, the config layer would depend on Ash being ready, creating a circular startup dependency. If a future control-plane RFC needs to expose config rows through Ash, it must add a separate Ash resource that targets the same table rather than replacing `BullX.Config.AppConfig`.
+
+### 7.6 `BullX.Config.Cache`
+
+`lib/bullx/config/cache.ex` is the ETS-backed cache owner.
+
+Responsibilities:
+
+- create a named ETS table on boot,
+- load all database overrides into ETS during `init/1`,
+- expose read access for bindings,
+- expose explicit refresh functions for write-path invalidation.
+
+Required behavior:
+
+- Table name: `:bullx_config_db`
+- ETS options: `[:named_table, :protected, read_concurrency: true]`
+- Read API:
+  - `get_raw(key) :: {:ok, binary()} | :error`
+- Refresh API:
+  - `refresh(key) :: :ok`
+  - `refresh_all() :: :ok`
+
+Implementation notes:
+
+- `refresh/1` must reload exactly one key from PostgreSQL and either update or delete the ETS entry.
+- `refresh_all/0` must reload the full table.
+- Reads must never hit the database directly.
+- Because the ETS table is `:protected`, only the owning `Cache` process may write to it. `refresh/1` and `refresh_all/0` must be implemented as `GenServer.call/2` so that callers can rely on the refresh having completed before the call returns.
+- `get_raw/1` must return `:error` rather than raising if the ETS table does not yet exist (for example during the window between a `Cache` crash and its restart). Concretely, wrap the `:ets.lookup` call in a `try/rescue` that catches `ArgumentError` and returns `:error`.
+- If the database query in `init/1` fails — for example because the `app_configs` table does not yet exist when the application starts before migrations have run — the cache must log a warning and start with an empty ETS table rather than crashing. In the degraded state the database source is silently absent; every variable resolves through OS environment and then its code default until the application is restarted after a successful migration.
+
+### 7.7 `BullX.Config.DatabaseBinding`
+
+`lib/bullx/config/database_binding.ex` implements `Skogsra.Binding`.
+
+Responsibilities:
+
+- derive the BullX database key from `Skogsra.Env`,
+- read the raw value from ETS,
+- cast it according to the declared Skogsra type,
+- validate the casted value against the declared Zoi schema when present,
+- return `{:error, :invalid}` when either step fails so resolution can continue.
+
+Required key format:
+
+- application prefix: `bullx`
+- separator: `.`
+- examples:
+  - `bullx.test_integer`
+  - `bullx.gateway_webhook_timeout_ms`
+  - `bullx.runtime_max_concurrency`
+
+The binding must derive the database key as:
+
+```text
+<app_name>.<keys joined by ".">
+```
+
+where `app_name` is `:bullx` and `keys` come from the Skogsra declaration.
+
+The binding must **never** call `String.to_atom/1`.
+
+Required behavior sketch:
+
+```elixir
+def get_env(%Skogsra.Env{} = env, _state) do
+  key = to_db_key(env)
+
+  case BullX.Config.Cache.get_raw(key) do
+    {:ok, raw} ->
+      case Skogsra.Type.cast(env, raw) do
+        {:ok, casted} ->
+          BullX.Config.Validation.validate_runtime(env, casted)
+
+        :error -> {:error, :invalid}
+      end
+
+    :error ->
+      {:error, :not_found}
+  end
+end
+```
+
+### 7.8 `BullX.Config.SystemBinding`
+
+`lib/bullx/config/system_binding.ex` also implements `Skogsra.Binding`.
+
+This is a strict replacement for Skogsra's built-in `:system` binding for BullX runtime dynamic variables.
+
+Responsibilities:
+
+- read `System.get_env/1` using `Skogsra.Env.os_env(env)`,
+- cast the raw string with `Skogsra.Type.cast/2`,
+- validate the casted value against the declared Zoi schema when present,
+- return `{:error, :invalid}` instead of terminally failing when the env value is malformed.
+
+This module is what makes these runtime flows valid:
+
+1. database value malformed -> try OS env
+2. database missing -> malformed OS env -> use default
+
+Without this custom binding, BullX cannot guarantee the "skip invalid value and continue" requirement.
+
+### 7.9 `BullX.Config.Writer`
+
+`lib/bullx/config/writer.ex` is the only supported write path for persisted config.
+
+Required API:
+
+- `put(key, value) when is_binary(key) and is_binary(value)`
+- `delete(key) when is_binary(key)`
+
+Required behavior:
+
+- `put/2`
+  - upserts into `app_configs`
+  - replaces `value` and `updated_at` on conflict
+  - refreshes the key in ETS after commit
+- `delete/1`
+  - deletes the row by primary key
+  - refreshes the key in ETS after delete
+
+Important non-goal:
+
+- `Writer` does not validate the value against a declared type at write time.
+- `Writer` does not resolve Zoi schemas before persistence.
+- Invalid strings may be persisted; they are ignored at read time by the bindings.
+
+That choice keeps the write path generic and leaves type semantics attached to code-defined settings rather than to free-form database rows.
+
+**Known limitation:** `put/2` and `delete/1` call `Cache.refresh/1` after the database operation. If `BullX.Config.Cache` is in a crash-restart cycle at that moment, the refresh call will fail and the database and ETS cache will be transiently inconsistent. The inconsistency self-heals on the next `Cache` restart because `init/1` reloads all rows from PostgreSQL. No retry or rollback logic is required in `Writer`.
+
+### 7.10 Bootstrap dotenv behavior
+
+The bootstrap helper in `config/support/bootstrap.exs` must map BullX environments to dotenv filenames as follows:
+
+| `config_env()` | dotenv profile |
+| --- | --- |
+| `:dev` | `development` |
+| `:test` | `test` |
+| `:prod` | `production` |
+| anything else | `Atom.to_string(config_env())` |
+
+The merge order for files must be:
+
+### Development
+
+1. `.env`
+2. `.env.development`
+3. `.env.local`
+4. existing `System.get_env()`
+
+### Test
+
+1. `.env`
+2. `.env.test`
+3. existing `System.get_env()`
+
+### Production
+
+1. `.env`
+2. `.env.production`
+3. existing `System.get_env()`
+
+This means:
+
+- `.env.local` is supported, but only for local development.
+- exported shell variables always win over file-based values.
+- `.env` values become part of the OS environment layer seen by runtime dynamic config.
+
+The implementation must use `Dotenvy.source!/2` with:
+
+- `require_files: false`
+- a side effect that writes merged values into the process environment
+
+### 7.11 `config/*.exs`
+
+All existing config scripts must require the shared bootstrap helper before reading environment values:
+
+```elixir
+Code.require_file("support/bootstrap.exs", __DIR__)
+```
+
+Expected usage pattern:
+
+- `config/runtime.exs` uses `BullX.Config.Bootstrap.load_dotenv!/1` and typed env helpers
+- `config/dev.exs`, `config/test.exs`, and `config/prod.exs` remain the environment-specific composition layer for Phoenix/Ecto defaults
+- `config/config.exs` remains the compile-time common layer
+
+The RFC does **not** require extracting every static compile-time literal from these files. It does require that their environment-dependent behavior be standardized through the bootstrap helper.
+
+### 7.12 `config/runtime.exs`
+
+`config/runtime.exs` must be modified in two ways:
+
+1. At the very top, before any `System.get_env/1` lookups, load dotenv values:
+
+```elixir
+BullX.Config.Bootstrap.load_dotenv!(
+  root: Path.expand("..", __DIR__),
+  env: config_env()
+)
+```
+
+2. Continue to configure bootstrap settings directly from the OS environment for all environments where appropriate.
+
+The existing environment-specific config files remain the fallback for bootstrap settings in `dev` and `test`, but `runtime.exs` may overlay them when OS env values are present.
+
+Examples of valid bootstrap behavior after this RFC:
+
+- `.env.local` can define `PORT=4100` in development and the endpoint uses it.
+- `.env.test` can define `POOL_SIZE=5` for tests.
+- exported shell variables such as `PORT=4200 mix phx.server` override all `.env*` files.
+- production still raises on missing required boot variables such as `DATABASE_URL` and `SECRET_KEY_BASE`.
+- bootstrap values such as `PORT` may additionally be constrained with Zoi, for example to `1..65_535`
+
+Bootstrap parsing is intentionally **fail-fast**. The "invalid value falls back to the next layer" rule in this RFC applies to **runtime dynamic settings**, not to mandatory boot-time values.
+
+### 7.13 Existing Phoenix/Ecto settings remain supported
+
+This RFC must preserve support for the values already represented in BullX's current config files, including at least:
+
+- `BullX.Repo` settings
+- `BullXWeb.Endpoint` settings
+- logger settings
+- Swoosh adapter settings
+- Phoenix framework settings already present in `config/config.exs`, `dev.exs`, `test.exs`, and `prod.exs`
+
+Support here means:
+
+- these settings continue to work after the refactor
+- any env-derived portion of their configuration flows through `BullX.Config.Bootstrap`
+- any bootstrap setting that needs a legal-value constraint may use Zoi in that helper path
+- settings that are bootstrap-only remain bootstrap-only; they are not forced into the PostgreSQL-backed runtime layer
+
+## 8. Application Tree
+
+`BullX.Application.start/2` must include `BullX.Config.Supervisor` as a top-level child.
+
+The child order must become:
+
+```elixir
+children = [
+  BullXWeb.Telemetry,
+  BullX.Repo,
+  BullX.Config.Supervisor,
+  {DNSCluster, query: Application.get_env(:bullx, :dns_cluster_query) || :ignore},
+  {Phoenix.PubSub, name: BullX.PubSub},
+  BullX.Skills.Supervisor,
+  BullX.Brain.Supervisor,
+  BullX.Runtime.Supervisor,
+  BullX.Gateway.Supervisor,
+  BullXWeb.Endpoint
+]
+```
+
+The placement is deliberate:
+
+- `BullX.Config.Supervisor` must start after `BullX.Repo`
+- it must start before any subsystem or endpoint that may eventually consume runtime dynamic configuration
+
+## 9. Tests
+
+### 9.1 Test-only declaration module
+
+Add `test/support/bullx/config/test_settings.ex` with a small config module that uses the real BullX DSL:
+
+```elixir
+defmodule BullX.Config.TestSettings do
+  use BullX.Config
+
+  @envdoc false
+  bullx_env :test_integer, :test_integer,
+    type: :integer,
+    default: 10,
+    zoi: Zoi.integer() |> Zoi.min(1) |> Zoi.max(20)
+
+  @envdoc false
+  bullx_env :test_boolean, :test_boolean,
+    type: :boolean,
+    default: false
+
+  @envdoc false
+  bullx_env :test_mode, :test_mode,
+    type: :binary,
+    default: "safe",
+    zoi: Zoi.enum(["safe", "fast", "strict"])
+end
+```
+
+No production code should depend on this module. It exists only to exercise the real runtime dynamic config pipeline in tests.
+
+### 9.2 `test/bullx/config/precedence_test.exs`
+
+This file must prove:
+
+- valid database override beats env and default
+- malformed database override falls back to env
+- Zoi-invalid database override falls back to env
+- Zoi-invalid env override falls back to default
+- missing database override with malformed env falls back to default
+- missing database override with missing env uses default
+
+These tests should use `BullX.DataCase` because they depend on `BullX.Repo`.
+
+**ETS isolation:** ETS is not reset by the database sandbox. Each test that writes to `app_configs` must restore ETS state on exit. The recommended pattern is an `on_exit` hook that calls `BullX.Config.Cache.refresh_all/0`; after the sandbox rolls back the database transaction, `refresh_all/0` re-syncs ETS from the now-empty database view.
+
+**Database sandbox visibility:** `BullX.Config.Cache` is a long-running process that uses its own database connection outside the test sandbox transaction. To make a test's `app_configs` insert visible to `Cache.refresh/1`, the test setup must explicitly allow the cache process to participate in the sandbox:
+
+```elixir
+setup do
+  Ecto.Adapters.SQL.Sandbox.allow(BullX.Repo, self(), GenServer.whereis(BullX.Config.Cache))
+  on_exit(fn -> BullX.Config.Cache.refresh_all() end)
+  :ok
+end
+```
+
+Without `Sandbox.allow`, `Cache.refresh/1` reads from its own connection and sees the pre-test database state, causing precedence assertions to fail silently.
+
+### 9.3 `test/bullx/config/cache_test.exs`
+
+This file must prove:
+
+- the ETS table is populated on boot
+- `refresh/1` updates a changed row
+- `refresh/1` deletes a removed row
+- `refresh_all/0` reloads the table
+
+### 9.4 `test/bullx/config/writer_test.exs`
+
+This file must prove:
+
+- `BullX.Config.Writer.put/2` upserts into the database and refreshes ETS
+- `BullX.Config.Writer.delete/1` deletes and refreshes ETS
+- `BullX.Config.put/2` and `BullX.Config.delete/1` delegate correctly
+
+### 9.5 `test/bullx/config/dotenv_test.exs`
+
+This file must exercise the bootstrap helper with temporary `.env*` files and prove:
+
+- development load order is `.env -> .env.development -> .env.local -> existing system env`
+- test load order is `.env -> .env.test -> existing system env`
+- `.env.local` is ignored in test mode
+- typed bootstrap env readers parse expected values and fail fast on malformed required values
+- bootstrap helpers can apply Zoi constraints and raise on Zoi-invalid values
+
+The tests must restore all modified environment variables on exit.
+
+### 9.6 `test/bullx/application_test.exs`
+
+Modify the existing file to add a new assertion that:
+
+- `BullX.Config.Supervisor` is running
+- `BullX.Config.Cache` is running
+
+Do **not** add `BullX.Config.Supervisor` to the existing "zero children" assertion; unlike the empty subsystem supervisors from RFC-0, it intentionally has one child in this RFC.
+
+## 10. Documentation
+
+### 10.1 `.env.example`
+
+Add `.env.example` at repo root with representative bootstrap variables only, for example:
+
+```dotenv
+# Phoenix / endpoint
+PORT=4000
+PHX_SERVER=true
+
+# Ecto / PostgreSQL
+DATABASE_URL=ecto://postgres:postgres@localhost/bullx_dev
+POOL_SIZE=10
+
+# Secrets
+SECRET_KEY_BASE=replace-me
+```
+
+This file is documentation, not a secret-bearing file.
+
+### 10.2 `.gitignore`
+
+Adjust `.gitignore` so that repo-root `.env.local` is ignored explicitly.
+
+This RFC does **not** require ignoring `.env`, `.env.development`, or `.env.test`; those files may contain non-secret team defaults and may be committed if desired.
+
+### 10.3 READMEs
+
+Update the English, Simplified Chinese, and Japanese READMEs with:
+
+- the new `.env` support
+- the load order of `.env`, `.env.development`, `.env.test`, and `.env.local`
+- a short explanation of bootstrap config vs runtime dynamic config
+- that runtime settings may declare legal-value constraints with Zoi in addition to primitive types
+- that the existing `config/*.exs` files are still the bootstrap entrypoints, now standardized through shared BullX config helpers
+- an example of editing a dynamic value through `BullX.Config.put/2`
+
+The README text must be high-level; the RFC remains the source of implementation detail.
+
+## 11. Non-Goals and Invariants
+
+The executing agent must not:
+
+- place the config infrastructure under `BullX.Runtime`, `BullX.Gateway`, or `BullXWeb`
+- use PostgreSQL `LISTEN/NOTIFY`
+- read runtime dynamic settings directly from the database on every call
+- leave Skogsra runtime variables on `cached: true`
+- rely on Skogsra's built-in `:config` binding for runtime dynamic settings
+- call `String.to_atom/1` on database keys
+- introduce Phoenix UI work under `lib/bullx_web/`
+- leave direct `System.get_env/1` parsing duplicated across `config/*.exs`
+- duplicate Zoi validation logic instead of routing it through shared config validation helpers
+- convert `BullX.Config.AppConfig` into an Ash resource; it must remain a plain Ecto schema to avoid a circular startup dependency with Ash domains
+
+The executing agent must preserve these invariants:
+
+- `BullX.Config` is root-level shared infrastructure
+- the existing `config/*.exs` files remain the bootstrap branch of that infrastructure
+- bootstrap settings are configured before Repo start and do not depend on PostgreSQL-backed config
+- runtime dynamic settings resolve in exactly this order: database, OS env, default
+- runtime dynamic settings may additionally constrain legal values with Zoi after type casting
+- runtime dynamic config reads are served from ETS
+- write-path refresh is explicit and local to the node; multi-node deployments are not supported and `BullX.Config.put/2` makes no guarantees about other nodes
+
+**Multi-node note:** In a hypothetical multi-node deployment, `BullX.Config.put/2` refreshes only the calling node's ETS cache. Other nodes continue serving stale values until restarted or explicitly refreshed. This is a known non-goal. Operators running multi-node BullX must restart all nodes after a config change, or wait for a future RFC that addresses cross-node invalidation.
+
+## 12. Acceptance Criteria
+
+A coding agent has completed this RFC when all of the following hold:
+
+1. `mix deps.get` adds `skogsra`, `dotenvy`, and `zoi`, and does not duplicate or downgrade existing `:ecto_sql` / `:postgrex` dependencies.
+2. `mix ecto.migrate` creates the `app_configs` table with the schema described in §7.3.
+3. `mix compile --warnings-as-errors` succeeds.
+4. `mix format --check-formatted` succeeds.
+5. `mix test` passes, including the new precedence, cache, writer, and dotenv tests.
+6. `mix precommit` passes end-to-end.
+7. Starting BullX in development with only `.env.local` present correctly affects bootstrap settings loaded from `config/runtime.exs`.
+8. For a runtime dynamic variable declared with `bullx_env`, a malformed database override falls back to a valid OS environment value.
+9. For a runtime dynamic variable declared with `bullx_env`, a malformed OS environment value falls back to the code default.
+10. The application supervision tree contains `BullX.Config.Supervisor` between `BullX.Repo` and the subsystem supervisors.
+11. The existing files under `config/` still drive BullX bootstrap behavior, but all env-derived logic inside them is routed through the shared bootstrap helper rather than scattered direct parsing.
+12. For a runtime dynamic variable declared with `bullx_env` and a `zoi:` schema, a Zoi-invalid database or environment value is rejected and the next fallback source is used.
+13. For a bootstrap value loaded through `BullX.Config.Bootstrap`, a Zoi-invalid value raises a descriptive startup error instead of being silently accepted.
+
+If any criterion fails, the RFC is not complete.

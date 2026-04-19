@@ -1,0 +1,18 @@
+name: "bullx-external-services"
+services:
+  rds:
+    image: pgvector/pgvector:pg18
+    deploy:
+      restart_policy:
+        condition: on-failure
+    environment:
+      - COMPOSE_PROJECT_NAME
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=just4local-dev
+    ports:
+      - 5433:5432
+    volumes:
+      - rds_data:/var/lib/pgsql/18/data
+
+volumes:
+  rds_data:
