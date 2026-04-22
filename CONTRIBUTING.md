@@ -18,6 +18,21 @@ mix setup              # install deps, create and migrate the database, build as
 iex -S mix phx.server  # start the dev server at http://localhost:4000
 ```
 
+### Git hooks (lefthook)
+
+A git pre-commit hook is wired up via [lefthook](https://lefthook.dev) — it
+formats staged `.ex`/`.exs`/`.heex` files, compiles with
+`--warnings-as-errors`, and prunes unused deps. It deliberately skips `mix
+test`; run the full `mix precommit` manually before opening a PR.
+
+Install the binary once (`brew install lefthook`, or see the
+[installation docs](https://lefthook.dev/installation/) for other platforms),
+then run:
+
+```sh
+lefthook install   # writes .git/hooks/* from lefthook.yml
+```
+
 ### Tests
 
 ```sh

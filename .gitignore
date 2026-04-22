@@ -43,3 +43,6 @@ npm-debug.log
 
 # Rust binary artifacts
 /target/
+
+# Lefthook per-developer overrides
+/lefthook-local.yml
