@@ -7,10 +7,8 @@ defmodule BullXGateway.PublishInboundTest do
   alias BullXGateway.AdapterRegistry
   alias BullXGateway.ControlPlane
   alias BullXGateway.ControlPlane.DedupeSeen
-  alias BullXGateway.ControlPlane.TriggerRecord
   alias BullXGateway.DedupeKey
   alias BullXGateway.Inputs.Trigger
-  alias BullXGateway.Signals.InboundReceived
   alias BullX.Repo
   alias Jido.Signal.Bus
 
@@ -26,7 +24,14 @@ defmodule BullXGateway.PublishInboundTest do
 
     @impl true
     def moderate(signal, _opts) do
-      {:modify, %{signal | data: Map.put(signal.data, "agent_text", "redacted")}}
+      {:modify,
+       %{
+         signal
+         | data:
+             Map.put(signal.data, "content", [
+               %{"kind" => "text", "body" => %{"text" => "redacted"}}
+             ])
+       }}
     end
   end
 
@@ -69,122 +74,12 @@ defmodule BullXGateway.PublishInboundTest do
     def moderate(_signal, _opts), do: {:reject, :bad_content, "blocked by moderator"}
   end
 
-  defmodule PublishedDuplicateStore do
-    @behaviour BullXGateway.ControlPlane.Store
-
-    @state __MODULE__.State
-
-    def put_state(state) do
-      Agent.update(@state, fn _ -> state end)
-    end
-
-    def state do
-      Agent.get(@state, & &1)
-    end
-
-    @impl true
-    def transaction(fun) do
-      case fun.(__MODULE__) do
-        {:error, reason} -> {:error, reason}
-        other -> {:ok, other}
-      end
-    end
-
-    @impl true
-    def put_trigger_record(_attrs), do: {:error, :duplicate}
-
-    @impl true
-    def fetch_trigger_record_by_dedupe_key(dedupe_key) do
-      %{record: record} = state()
-
-      case record.dedupe_key == dedupe_key do
-        true -> {:ok, record}
-        false -> :error
-      end
-    end
-
-    @impl true
-    def list_trigger_records(_filters), do: {:ok, []}
-
-    @impl true
-    def update_trigger_record(id, changes) do
-      Agent.update(@state, fn %{record: record} = state ->
-        %{state | record: Map.merge(record, Map.new(changes))}
-      end)
-
-      send_update(id, changes)
-      :ok
-    end
-
-    @impl true
-    def put_dedupe_seen(attrs) do
-      Agent.update(@state, fn state -> %{state | dedupe_seen: attrs} end)
-      :ok
-    end
-
-    @impl true
-    def fetch_dedupe_seen(_dedupe_key), do: :error
-
-    @impl true
-    def list_active_dedupe_seen, do: {:ok, []}
-
-    @impl true
-    def delete_expired_dedupe_seen, do: {:ok, 0}
-
-    @impl true
-    def delete_old_trigger_records(_before), do: {:ok, 0}
-
-    @impl true
-    def put_dispatch(_attrs), do: {:error, :not_implemented}
-
-    @impl true
-    def update_dispatch(_id, _changes), do: {:error, :not_implemented}
-
-    @impl true
-    def delete_dispatch(_id), do: {:error, :not_implemented}
-
-    @impl true
-    def fetch_dispatch(_id), do: :error
-
-    @impl true
-    def list_dispatches_by_scope(_channel, _scope_id, _statuses), do: {:ok, []}
-
-    @impl true
-    def put_attempt(_attrs), do: {:error, :not_implemented}
-
-    @impl true
-    def list_attempts(_dispatch_id), do: {:ok, []}
-
-    @impl true
-    def put_dead_letter(_attrs), do: {:error, :not_implemented}
-
-    @impl true
-    def fetch_dead_letter(_dispatch_id), do: :error
-
-    @impl true
-    def list_dead_letters(_filters), do: {:ok, []}
-
-    @impl true
-    def increment_dead_letter_replay_count(_dispatch_id), do: {:error, :not_implemented}
-
-    defp send_update(id, changes) do
-      case state() do
-        %{test_pid: test_pid} when is_pid(test_pid) ->
-          send(test_pid, {:store_updated, id, changes})
-
-        _ ->
-          :ok
-      end
-    end
-  end
-
   setup tags do
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BullX.Repo, shared: not tags[:async])
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
 
     for pid <- [
           Process.whereis(BullXGateway.ControlPlane),
-          Process.whereis(BullXGateway.ControlPlane.InboundReplay),
           Process.whereis(BullXGateway.Retention)
         ],
         is_pid(pid) do
@@ -195,7 +90,7 @@ defmodule BullXGateway.PublishInboundTest do
     :ok
   end
 
-  test "publishes an inbound trigger, stores it, and dedupes repeats" do
+  test "publishes an inbound trigger, dedupes repeats after Bus.publish succeeds" do
     tenant = unique_tenant()
     register_adapter({:github, tenant}, 86_400_000)
     subscribe_inbound!()
@@ -205,11 +100,10 @@ defmodule BullXGateway.PublishInboundTest do
     assert {:ok, :published} = Gateway.publish_inbound(input)
     assert_receive {:signal, signal}, 500
     assert signal.id == "evt-1"
-    assert signal.data["event_category"] == "trigger"
+    assert get_in(signal.data, ["event", "type"]) == "trigger"
 
     dedupe_key = DedupeKey.generate(input.source, input.id)
-    assert {:ok, record} = ControlPlane.fetch_trigger_record_by_dedupe_key(dedupe_key)
-    assert %DateTime{} = record.published_at
+    assert {:ok, _} = ControlPlane.fetch_dedupe_seen(dedupe_key)
 
     assert {:ok, :duplicate} = Gateway.publish_inbound(input)
     refute_receive {:signal, _signal}, 100
@@ -240,84 +134,6 @@ defmodule BullXGateway.PublishInboundTest do
     assert replayed_signal.id == input.id
   end
 
-  test "replays unpublished trigger records from the control plane" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
-    subscribe_inbound!()
-
-    input = trigger_input(tenant, "evt-replay")
-    {:ok, signal} = InboundReceived.new(input)
-    dedupe_key = DedupeKey.generate(signal.source, signal.id)
-
-    record = %{
-      source: signal.source,
-      external_id: signal.id,
-      dedupe_key: dedupe_key,
-      signal_id: signal.id,
-      signal_type: signal.type,
-      event_category: signal.data["event_category"],
-      duplex: signal.data["duplex"],
-      channel_adapter: signal.extensions["bullx_channel_adapter"],
-      channel_tenant: signal.extensions["bullx_channel_tenant"],
-      scope_id: signal.data["scope_id"],
-      thread_id: signal.data["thread_id"],
-      signal_envelope: signal_map(signal),
-      policy_outcome: "published"
-    }
-
-    assert {:ok, :ok} = ControlPlane.transaction(fn store -> store.put_trigger_record(record) end)
-
-    past = DateTime.add(DateTime.utc_now(), -60, :second)
-
-    Repo.update_all(from(t in TriggerRecord, where: t.dedupe_key == ^dedupe_key),
-      set: [inserted_at: past]
-    )
-
-    BullXGateway.ControlPlane.InboundReplay.run_once()
-
-    assert_receive {:signal, replayed_signal}, 500
-    assert replayed_signal.id == signal.id
-
-    assert {:ok, stored_record} = ControlPlane.fetch_trigger_record_by_dedupe_key(dedupe_key)
-    assert %DateTime{} = stored_record.published_at
-  end
-
-  test "run_once replays a freshly failed pending record without waiting for the grace window" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
-    subscribe_inbound!()
-
-    input = trigger_input(tenant, "evt-run-once-now")
-    {:ok, signal} = InboundReceived.new(input)
-    dedupe_key = DedupeKey.generate(signal.source, signal.id)
-
-    record = %{
-      source: signal.source,
-      external_id: signal.id,
-      dedupe_key: dedupe_key,
-      signal_id: signal.id,
-      signal_type: signal.type,
-      event_category: signal.data["event_category"],
-      duplex: signal.data["duplex"],
-      channel_adapter: signal.extensions["bullx_channel_adapter"],
-      channel_tenant: signal.extensions["bullx_channel_tenant"],
-      scope_id: signal.data["scope_id"],
-      thread_id: signal.data["thread_id"],
-      signal_envelope: signal_map(signal),
-      policy_outcome: "published"
-    }
-
-    assert {:ok, :ok} = ControlPlane.transaction(fn store -> store.put_trigger_record(record) end)
-
-    BullXGateway.ControlPlane.InboundReplay.run_once()
-
-    assert_receive {:signal, replayed_signal}, 500
-    assert replayed_signal.id == signal.id
-
-    assert {:ok, stored_record} = ControlPlane.fetch_trigger_record_by_dedupe_key(dedupe_key)
-    assert %DateTime{} = stored_record.published_at
-  end
-
   test "gating fallback flags and moderation modifications are reflected in the published signal" do
     tenant = unique_tenant()
     register_adapter({:github, tenant}, 86_400_000)
@@ -333,7 +149,7 @@ defmodule BullXGateway.PublishInboundTest do
 
     assert {:ok, :published} = Gateway.publish_inbound(input, opts)
     assert_receive {:signal, signal}, 500
-    assert signal.data["agent_text"] == "redacted"
+    assert signal.data["content"] == [%{"kind" => "text", "body" => %{"text" => "redacted"}}]
     assert signal.extensions["bullx_moderation_modified"] == true
 
     assert [
@@ -355,49 +171,6 @@ defmodule BullXGateway.PublishInboundTest do
              Gateway.publish_inbound(input, security: [adapter: DenySecurity])
 
     refute_receive {:signal, _signal}, 100
-  end
-
-  test "unpublished trigger records have no dedupe_seen row; replay writes it" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
-    subscribe_inbound!()
-
-    input = trigger_input(tenant, "evt-no-mark-seen")
-    {:ok, signal} = InboundReceived.new(input)
-    dedupe_key = DedupeKey.generate(signal.source, signal.id)
-
-    record = %{
-      source: signal.source,
-      external_id: signal.id,
-      dedupe_key: dedupe_key,
-      signal_id: signal.id,
-      signal_type: signal.type,
-      event_category: signal.data["event_category"],
-      duplex: signal.data["duplex"],
-      channel_adapter: signal.extensions["bullx_channel_adapter"],
-      channel_tenant: signal.extensions["bullx_channel_tenant"],
-      scope_id: signal.data["scope_id"],
-      thread_id: signal.data["thread_id"],
-      signal_envelope: signal_map(signal),
-      policy_outcome: "published"
-    }
-
-    assert {:ok, :ok} = ControlPlane.transaction(fn store -> store.put_trigger_record(record) end)
-
-    # Invariant: no dedupe_seen row exists while record is unpublished.
-    assert :error = ControlPlane.fetch_dedupe_seen(dedupe_key)
-
-    past = DateTime.add(DateTime.utc_now(), -60, :second)
-
-    Repo.update_all(from(t in TriggerRecord, where: t.dedupe_key == ^dedupe_key),
-      set: [inserted_at: past]
-    )
-
-    BullXGateway.ControlPlane.InboundReplay.run_once()
-    assert_receive {:signal, _}, 500
-
-    # After replay, dedupe_seen is recorded.
-    assert {:ok, _} = ControlPlane.fetch_dedupe_seen(dedupe_key)
   end
 
   test "dedupe TTL is read per-adapter from AdapterRegistry" do
@@ -496,18 +269,18 @@ defmodule BullXGateway.PublishInboundTest do
            ] = signal.extensions["bullx_flags"]
   end
 
-  test "security denial short-circuits before gating telemetry fires" do
+  test "security denial yields policy_outcome :denied_security on publish_inbound:stop" do
     tenant = unique_tenant()
     register_adapter({:github, tenant}, 86_400_000)
     subscribe_inbound!()
 
-    handler_id = "test-gating-short-circuit-#{System.unique_integer([:positive])}"
+    handler_id = "test-publish-stop-denied-#{System.unique_integer([:positive])}"
     test_pid = self()
 
     :telemetry.attach(
       handler_id,
-      [:bullx, :gateway, :gating, :decision],
-      fn _event, _m, _meta, _cfg -> send(test_pid, :gating_fired) end,
+      [:bullx, :gateway, :publish_inbound, :stop],
+      fn _event, _m, metadata, _cfg -> send(test_pid, {:publish_stop, metadata}) end,
       nil
     )
 
@@ -521,7 +294,7 @@ defmodule BullXGateway.PublishInboundTest do
                gating: [gaters: [DenyGater]]
              )
 
-    refute_receive :gating_fired, 100
+    assert_receive {:publish_stop, %{policy_outcome: :denied_security}}, 500
   end
 
   test "telemetry spans use the RFC namespace" do
@@ -546,67 +319,6 @@ defmodule BullXGateway.PublishInboundTest do
              Gateway.publish_inbound(trigger_input(tenant, "evt-telemetry-stop"))
 
     assert_receive {:publish_stop, %{policy_outcome: :published}}, 500
-  end
-
-  test "already-published duplicate records return duplicate without republishing" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
-    subscribe_inbound!()
-
-    {:ok, _agent} =
-      start_supervised(%{
-        id: PublishedDuplicateStore.State,
-        start:
-          {Agent, :start_link,
-           [
-             fn -> %{record: nil, dedupe_seen: nil, test_pid: self()} end,
-             [name: PublishedDuplicateStore.State]
-           ]}
-      })
-
-    input = trigger_input(tenant, "evt-published-duplicate")
-    {:ok, signal} = InboundReceived.new(input)
-    dedupe_key = DedupeKey.generate(signal.source, signal.id)
-
-    PublishedDuplicateStore.put_state(%{
-      test_pid: self(),
-      dedupe_seen: nil,
-      record: %{
-        id: Ecto.UUID.generate(),
-        source: signal.source,
-        external_id: signal.id,
-        dedupe_key: dedupe_key,
-        signal_id: signal.id,
-        signal_type: signal.type,
-        event_category: signal.data["event_category"],
-        duplex: signal.data["duplex"],
-        channel_adapter: signal.extensions["bullx_channel_adapter"],
-        channel_tenant: signal.extensions["bullx_channel_tenant"],
-        scope_id: signal.data["scope_id"],
-        thread_id: signal.data["thread_id"],
-        signal_envelope: signal_map(signal),
-        policy_outcome: "published",
-        published_at: DateTime.utc_now(),
-        inserted_at: DateTime.utc_now()
-      }
-    })
-
-    original_state = :sys.get_state(BullXGateway.ControlPlane)
-
-    on_exit(fn ->
-      :sys.replace_state(BullXGateway.ControlPlane, fn _ -> original_state end)
-    end)
-
-    :sys.replace_state(BullXGateway.ControlPlane, fn state ->
-      %{state | store: PublishedDuplicateStore}
-    end)
-
-    assert {:ok, :duplicate} = Gateway.publish_inbound(input)
-    refute_receive {:signal, _signal}, 100
-    refute_receive {:store_updated, _, _}, 100
-
-    assert %{dedupe_seen: %{external_id: external_id}} = PublishedDuplicateStore.state()
-    assert external_id == signal.id
   end
 
   defp register_adapter(channel, dedupe_ttl_ms) do
@@ -634,26 +346,20 @@ defmodule BullXGateway.PublishInboundTest do
       actor: %{
         id: "github:octocat",
         display: "octocat",
-        bot: false,
-        app_user_id: nil
+        bot: false
       },
-      agent_text: "Issue opened",
-      adapter_event: %{
-        type: "github.issue.opened",
+      content: [
+        %{kind: :text, body: %{"text" => "Issue opened"}}
+      ],
+      event: %{
+        name: "github.issue.opened",
         version: 1,
         data: %{issue_number: 101}
       },
       refs: [
         %{kind: "issue", id: "101", url: "https://github.com/example/issues/101"}
-      ],
-      content: []
+      ]
     }
-  end
-
-  defp signal_map(signal) do
-    signal
-    |> Jason.encode!()
-    |> Jason.decode!()
   end
 
   defp unique_tenant do

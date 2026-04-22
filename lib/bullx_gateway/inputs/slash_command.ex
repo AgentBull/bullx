@@ -8,7 +8,7 @@ defmodule BullXGateway.Inputs.SlashCommand do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel
   ]
   defstruct [
@@ -20,7 +20,7 @@ defmodule BullXGateway.Inputs.SlashCommand do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel,
     :command_name,
     :args,
@@ -38,7 +38,7 @@ defmodule BullXGateway.Inputs.SlashCommand do
           scope_id: String.t(),
           thread_id: String.t() | nil,
           actor: BullXGateway.Inputs.actor(),
-          adapter_event: BullXGateway.Inputs.adapter_event(),
+          event: BullXGateway.Inputs.event(),
           reply_channel: BullXGateway.Inputs.reply_channel(),
           command_name: String.t() | nil,
           args: String.t() | nil,

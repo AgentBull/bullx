@@ -6,7 +6,8 @@ defmodule BullXGateway.Delivery do
 
   The struct is JSON-serializable except for the streaming Enumerable: a
   `:stream` delivery carries an `Enumerable.t()` as `content`, which lives only
-  in the BEAM process and is not persisted into `gateway_dispatches.payload`.
+  in the BEAM process. On crash the Enumerable is gone; Runtime + Oban is
+  responsible for re-issuing outstanding deliveries.
   """
 
   alias BullXGateway.Delivery.Content

@@ -21,7 +21,6 @@ defmodule BullXGateway.CoreSupervisor do
       BullXGateway.Dispatcher,
       BullXGateway.DLQ.ReplaySupervisor,
       BullXGateway.Retention,
-      BullXGateway.ControlPlane.InboundReplay,
       BullXGateway.Telemetry
     ]
 

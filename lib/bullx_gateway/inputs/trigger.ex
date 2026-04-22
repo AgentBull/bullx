@@ -1,7 +1,7 @@
 defmodule BullXGateway.Inputs.Trigger do
   @moduledoc false
 
-  @enforce_keys [:id, :source, :channel, :scope_id, :thread_id, :actor, :adapter_event]
+  @enforce_keys [:id, :source, :channel, :scope_id, :thread_id, :actor, :event]
   defstruct [
     :id,
     :source,
@@ -11,8 +11,7 @@ defmodule BullXGateway.Inputs.Trigger do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
-    :agent_text,
+    :event,
     refs: [],
     content: []
   ]
@@ -26,8 +25,7 @@ defmodule BullXGateway.Inputs.Trigger do
           scope_id: String.t(),
           thread_id: String.t() | nil,
           actor: BullXGateway.Inputs.actor(),
-          adapter_event: BullXGateway.Inputs.adapter_event(),
-          agent_text: String.t() | nil,
+          event: BullXGateway.Inputs.event(),
           refs: [BullXGateway.Inputs.ref()],
           content: [BullXGateway.Inputs.content_block()]
         }

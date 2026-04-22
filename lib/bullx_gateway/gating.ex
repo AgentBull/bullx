@@ -1,9 +1,15 @@
 defmodule BullXGateway.Gating do
-  @moduledoc false
+  @moduledoc """
+  Executes the gating stage of the inbound policy pipeline.
+
+  Gaters answer whether a canonical inbound signal may proceed at all, using a
+  `BullXGateway.SignalContext`. Unlike moderation, gating never rewrites the
+  signal: it either allows, or terminates the pipeline, with optional
+  allow-with-flag fallback when timeout or error policy says to fail open.
+  """
 
   alias BullXGateway.PolicyRunner
   alias BullXGateway.SignalContext
-  alias BullXGateway.Telemetry
 
   @type reason :: atom()
   @type description :: String.t()
@@ -37,11 +43,9 @@ defmodule BullXGateway.Gating do
 
     case PolicyRunner.run(fn -> gater.check(ctx, opts) end, timeout_ms) do
       {:ok, :allow} ->
-        emit_decision(gater, :allow, nil)
         :allow
 
       {:ok, {:deny, reason, description}} ->
-        emit_decision(gater, :deny, reason)
         {:deny, reason, description}
 
       {:ok, other} ->
@@ -57,12 +61,10 @@ defmodule BullXGateway.Gating do
 
   defp handle_timeout_fallback(gater, :allow_with_flag) do
     flag = flag("gating", gater, "timeout_fallback", "#{inspect(gater)} timed out")
-    emit_decision(gater, :allow_with_flag, :timeout_fallback)
     {:allow_with_flag, flag}
   end
 
   defp handle_timeout_fallback(gater, _fallback) do
-    emit_decision(gater, :deny, :timeout_fallback)
     {:deny, :timeout_fallback, "#{inspect(gater)} timed out"}
   end
 
@@ -70,21 +72,11 @@ defmodule BullXGateway.Gating do
     flag =
       flag("gating", gater, "error_fallback", "#{inspect(gater)} errored: #{inspect(reason)}")
 
-    emit_decision(gater, :allow_with_flag, :error_fallback)
     {:allow_with_flag, flag}
   end
 
   defp handle_error_fallback(gater, reason, _fallback) do
-    emit_decision(gater, :deny, :error_fallback)
     {:deny, :error_fallback, "#{inspect(gater)} errored: #{inspect(reason)}"}
-  end
-
-  defp emit_decision(module, decision, reason) do
-    Telemetry.emit([:bullx, :gateway, :gating, :decision], %{count: 1}, %{
-      module: module,
-      decision: decision,
-      reason: reason
-    })
   end
 
   defp flag(stage, module, reason, description) do

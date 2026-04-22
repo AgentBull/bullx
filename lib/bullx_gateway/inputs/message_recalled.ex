@@ -8,7 +8,7 @@ defmodule BullXGateway.Inputs.MessageRecalled do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel
   ]
   defstruct [
@@ -20,13 +20,13 @@ defmodule BullXGateway.Inputs.MessageRecalled do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel,
     :target_external_message_id,
     :recalled_by_actor,
     :recalled_at,
-    :agent_text,
-    refs: []
+    refs: [],
+    content: []
   ]
 
   @type t :: %__MODULE__{
@@ -38,12 +38,12 @@ defmodule BullXGateway.Inputs.MessageRecalled do
           scope_id: String.t(),
           thread_id: String.t() | nil,
           actor: BullXGateway.Inputs.actor(),
-          adapter_event: BullXGateway.Inputs.adapter_event(),
+          event: BullXGateway.Inputs.event(),
           reply_channel: BullXGateway.Inputs.reply_channel(),
           target_external_message_id: String.t() | nil,
           recalled_by_actor: BullXGateway.Inputs.actor() | nil,
           recalled_at: DateTime.t() | nil,
-          agent_text: String.t() | nil,
-          refs: [BullXGateway.Inputs.ref()]
+          refs: [BullXGateway.Inputs.ref()],
+          content: [BullXGateway.Inputs.content_block()]
         }
 end

@@ -1,15 +1,14 @@
 defmodule FeishuOpenAPI.Spec do
-  @moduledoc false
+  @moduledoc """
+  Internal request description passed from `FeishuOpenAPI.request/4` to
+  `FeishuOpenAPI.Request`.
 
-  # Internal request description — pre-auth, post-path-render. Produced by
-  # `build/3` from the options passed to `FeishuOpenAPI.request/4`, then
-  # consumed by `FeishuOpenAPI.Request.build/2` which resolves auth, builds
-  # the final URL, and produces the `Req.request/1` keyword list.
-  #
-  # Keeping this struct internal lets `do_request/5` read top-to-bottom as
-  # `Spec → Request → send → process_response`, instead of a single 30-line
-  # `with` chain that mixes path rendering, auth selection, URL building,
-  # header merging, body encoding, and Req option layering.
+  `build/3` resolves the pieces that can be decided before authentication or
+  `Req` option assembly, especially path rendering and access-token mode.
+  Keeping this as a struct lets the request pipeline stay staged and readable:
+  `Spec -> Request -> Req -> response handling`, instead of mixing path, auth,
+  headers, body, and retry concerns in one function.
+  """
 
   alias FeishuOpenAPI.Error
 

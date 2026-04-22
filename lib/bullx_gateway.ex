@@ -8,7 +8,6 @@ defmodule BullXGateway do
 
   alias BullXGateway.AdapterRegistry
   alias BullXGateway.ControlPlane
-  alias BullXGateway.ControlPlane.InboundReplay
   alias BullXGateway.Deduper
   alias BullXGateway.Delivery
   alias BullXGateway.Delivery.Outcome
@@ -17,7 +16,6 @@ defmodule BullXGateway do
   alias BullXGateway.Json
   alias BullXGateway.Moderation
   alias BullXGateway.OutboundDeduper
-  alias BullXGateway.RetryPolicy
   alias BullXGateway.ScopeWorker
   alias BullXGateway.Security
   alias BullXGateway.SignalContext
@@ -96,16 +94,12 @@ defmodule BullXGateway do
            ),
          {:ok, signal} <- put_flags(signal, gating_flags ++ moderation_flags),
          {:ok, signal} <- maybe_put_modified(signal, modified?),
-         {:ok, record} <- persist_trigger(signal),
          :ok <- publish_signal(signal),
-         {:ok, :published} <- finalize_publish(record, ttl_ms_for(input.channel)) do
+         :ok <- mark_seen(input) do
       {:ok, :published}
     else
       true ->
         {:ok, :duplicate}
-
-      {:error, :duplicate} ->
-        handle_unpublished_duplicate(input)
 
       {:error, _} = error ->
         error
@@ -214,105 +208,23 @@ defmodule BullXGateway do
     })
   end
 
-  defp persist_trigger(%Signal{} = signal) do
-    record = trigger_record(signal)
-
-    case ControlPlane.transaction(fn store -> store.put_trigger_record(record) end) do
-      {:ok, :ok} ->
-        case ControlPlane.fetch_trigger_record_by_dedupe_key(record.dedupe_key) do
-          {:ok, persisted_record} -> {:ok, persisted_record}
-          :error -> {:error, {:store_unavailable, :missing_trigger_record}}
-        end
-
-      {:error, :duplicate} ->
-        {:error, :duplicate}
-
-      {:error, reason} ->
-        {:error, {:store_unavailable, reason}}
-    end
-  end
-
-  defp handle_unpublished_duplicate(input) do
-    dedupe_key = BullXGateway.DedupeKey.generate(input.source, input.id)
-
-    case ControlPlane.fetch_trigger_record_by_dedupe_key(dedupe_key) do
-      {:ok, %{published_at: %DateTime{}} = record} ->
-        finalize_already_published_duplicate(record, ttl_ms_for(input.channel))
-
-      {:ok, record} ->
-        republish_duplicate_record(record, ttl_ms_for(input.channel))
-
-      :error ->
-        {:error, {:store_unavailable, :missing_trigger_record}}
-    end
-  end
-
-  defp republish_duplicate_record(record, ttl_ms) do
-    with {:ok, signal} <- Signal.from_map(record.signal_envelope),
-         :ok <- publish_signal(signal),
-         {:ok, :published} <- finalize_publish(record, ttl_ms) do
-      {:ok, :published}
-    end
-  end
-
-  defp finalize_already_published_duplicate(record, ttl_ms) do
-    case Deduper.mark_seen(record.source, record.external_id, ttl_ms) do
-      :ok -> {:ok, :duplicate}
-      {:error, reason} -> {:error, {:store_unavailable, reason}}
-    end
-  end
-
   defp publish_signal(signal) do
     case Bus.publish(BullXGateway.SignalBus, [signal]) do
       {:ok, _} ->
         :ok
 
       {:error, reason} ->
-        InboundReplay.run_once()
         {:error, {:bus_publish_failed, reason}}
     end
   end
 
-  defp finalize_publish(record, ttl_ms) do
-    now = DateTime.utc_now()
+  defp mark_seen(input) do
+    ttl_ms = ttl_ms_for(input.channel)
 
-    case ControlPlane.update_trigger_record(record.id, %{published_at: now}) do
-      :ok ->
-        case Deduper.mark_seen(record.source, record.external_id, ttl_ms) do
-          :ok -> {:ok, :published}
-          {:error, reason} -> {:error, {:store_unavailable, reason}}
-        end
-
-      {:error, reason} ->
-        InboundReplay.run_once()
-        {:error, {:store_unavailable, reason}}
+    case Deduper.mark_seen(input.source, input.id, ttl_ms) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:store_unavailable, reason}}
     end
-  end
-
-  defp trigger_record(signal) do
-    dedupe_key = BullXGateway.DedupeKey.generate(signal.source, signal.id)
-
-    %{
-      source: signal.source,
-      external_id: signal.id,
-      dedupe_key: dedupe_key,
-      signal_id: signal.id,
-      signal_type: signal.type,
-      event_category: signal.data["event_category"],
-      duplex: signal.data["duplex"],
-      channel_adapter: signal.extensions["bullx_channel_adapter"],
-      channel_tenant: signal.extensions["bullx_channel_tenant"],
-      scope_id: signal.data["scope_id"],
-      thread_id: signal.data["thread_id"],
-      signal_envelope: signal_to_map(signal),
-      policy_outcome: "published"
-    }
-  end
-
-  defp signal_to_map(signal) do
-    signal
-    |> Jason.encode!()
-    |> Jason.decode!()
   end
 
   defp stage_config(gateway_config, opts, stage) do
@@ -338,7 +250,7 @@ defmodule BullXGateway do
           {:invalid_delivery, term()}
           | {:unknown_channel, Delivery.channel()}
           | {:security_denied, :sanitize, atom(), String.t()}
-          | {:store_unavailable, term()}
+          | {:enqueue_failed, term()}
 
   @spec deliver(Delivery.t() | term(), keyword()) ::
           {:ok, String.t()} | {:error, delivery_error()}
@@ -368,7 +280,7 @@ defmodule BullXGateway do
   end
 
   @spec replay_dead_letter(String.t()) ::
-          {:ok, %{status: :replayed, dispatch: map()}} | {:error, :not_found | term()}
+          {:ok, %{status: :replayed, delivery: Delivery.t()}} | {:error, :not_found | term()}
   def replay_dead_letter(dispatch_id) when is_binary(dispatch_id) do
     ReplayWorker.replay(dispatch_id)
   end
@@ -376,11 +288,6 @@ defmodule BullXGateway do
   @spec list_dead_letters(keyword()) :: {:ok, [map()]}
   def list_dead_letters(opts \\ []) do
     ControlPlane.list_dead_letters(opts)
-  end
-
-  @spec archive_dead_letter(String.t()) :: :ok | {:error, term()}
-  def archive_dead_letter(dispatch_id) when is_binary(dispatch_id) do
-    ControlPlane.archive_dead_letter(dispatch_id)
   end
 
   @spec purge_dead_letter(String.t()) :: :ok | {:error, term()}
@@ -421,7 +328,10 @@ defmodule BullXGateway do
           {:ok, delivery.id}
 
         :miss ->
-          dispatch_to_scope(delivery, adapter_entry)
+          case ScopeWorker.enqueue(delivery.channel, delivery.scope_id, delivery) do
+            :ok -> {:ok, delivery.id}
+            {:error, reason} -> {:error, {:enqueue_failed, reason}}
+          end
       end
     else
       {:capability_unsupported, reason} ->
@@ -473,41 +383,6 @@ defmodule BullXGateway do
       {:ok, %Delivery{} = sanitized} -> {:ok, sanitized}
       {:ok, %Delivery{} = sanitized, _metadata} -> {:ok, sanitized}
       {:error, {:security_denied, _, _, _} = reason} -> {:error, reason}
-    end
-  end
-
-  defp dispatch_to_scope(delivery, adapter_entry) do
-    retry_policy = RetryPolicy.build(Map.get(adapter_entry.config, :retry_policy, %{}))
-
-    attrs = %{
-      id: delivery.id,
-      op: Atom.to_string(delivery.op),
-      channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
-      channel_tenant: elem(delivery.channel, 1),
-      scope_id: delivery.scope_id,
-      thread_id: delivery.thread_id,
-      caused_by_signal_id: delivery.caused_by_signal_id,
-      payload: ScopeWorker.encode_delivery_payload(delivery),
-      status: "queued",
-      attempts: 0,
-      max_attempts: retry_policy.max_attempts,
-      available_at: nil,
-      last_error: nil
-    }
-
-    case ControlPlane.put_dispatch(attrs) do
-      :ok ->
-        :ok = ScopeWorker.enqueue(delivery.channel, delivery.scope_id, delivery.id)
-        {:ok, delivery.id}
-
-      {:error, :duplicate} ->
-        # Belt-and-suspenders for an in-flight duplicate: treat as idempotent
-        # (RFC 0003 §7.7.4). The original dispatch's outcome signal is what
-        # the caller observes.
-        {:ok, delivery.id}
-
-      {:error, reason} ->
-        {:error, {:store_unavailable, reason}}
     end
   end
 

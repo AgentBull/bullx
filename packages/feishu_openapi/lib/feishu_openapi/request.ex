@@ -1,15 +1,13 @@
 defmodule FeishuOpenAPI.Request do
-  @moduledoc false
+  @moduledoc """
+  Turns a `FeishuOpenAPI.Client` and `FeishuOpenAPI.Spec` into final
+  `Req.request/1` options.
 
-  # Turns a Client + Spec into a keyword list ready for `Req.request/1`.
-  #
-  # Responsibilities, in order:
-  #   1. Resolve the Authorization header from the spec's access_token_type,
-  #      consulting `TokenManager` / `UserTokenManager` as needed.
-  #   2. Build the absolute URL from the client's base_url + spec path.
-  #   3. Merge headers (auth + client-wide + per-request + content-type).
-  #   4. Encode the body (JSON / form-multipart) and attach query params.
-  #   5. Layer Req options (SDK defaults → client-level → per-request).
+  This module is the SDK's request assembly boundary. It resolves managed
+  credentials, applies Feishu's URL conventions, merges headers and body
+  encoders, and preserves the layering rule `client defaults -> request
+  overrides` before the actual HTTP call happens.
+  """
 
   alias FeishuOpenAPI.{Client, Error, Spec, TokenManager, UserTokenManager}
 

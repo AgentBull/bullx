@@ -20,7 +20,6 @@ defmodule BullXGateway.ControlPlane.DeadLetter do
     field :attempts_summary, :map
     field :dead_lettered_at, :utc_datetime_usec
     field :replay_count, :integer, default: 0
-    field :archived_at, :utc_datetime_usec
   end
 
   def changeset(dead_letter, attrs) do
@@ -38,8 +37,7 @@ defmodule BullXGateway.ControlPlane.DeadLetter do
       :attempts_total,
       :attempts_summary,
       :dead_lettered_at,
-      :replay_count,
-      :archived_at
+      :replay_count
     ])
     |> validate_required([
       :dispatch_id,

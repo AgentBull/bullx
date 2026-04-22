@@ -1,8 +1,15 @@
 defmodule BullXGateway.Security do
-  @moduledoc false
+  @moduledoc """
+  Executes adapter-supplied security hooks around Gateway traffic.
+
+  The `:verify` stage runs before inbound dedupe and policy so adapters can
+  apply transport-specific sender checks. The `:sanitize` stage runs on
+  outbound deliveries before adapter send, edit, or stream calls. Both stages
+  share the same bounded execution and fail-open or fail-closed fallback policy
+  used by the rest of Gateway.
+  """
 
   alias BullXGateway.PolicyRunner
-  alias BullXGateway.Telemetry
 
   @type stage :: :verify | :sanitize
   @type input ::
@@ -77,15 +84,12 @@ defmodule BullXGateway.Security do
              timeout_ms
            ) do
         {:ok, :ok} ->
-          emit_decision(adapter, :allow, nil)
           :ok
 
         {:ok, {:ok, metadata}} ->
-          emit_decision(adapter, :allow, nil)
           {:ok, metadata}
 
         {:ok, {:deny, reason, description}} ->
-          emit_decision(adapter, :deny, reason)
           {:deny, reason, description}
 
         {:ok, {:error, reason}} ->
@@ -120,11 +124,9 @@ defmodule BullXGateway.Security do
              timeout_ms
            ) do
         {:ok, {:ok, sanitized_delivery}} ->
-          emit_decision(adapter, :allow, nil)
           {:ok, sanitized_delivery}
 
         {:ok, {:ok, sanitized_delivery, metadata}} ->
-          emit_decision(adapter, :allow, nil)
           {:ok, sanitized_delivery, metadata}
 
         {:ok, {:error, reason}} ->
@@ -145,57 +147,38 @@ defmodule BullXGateway.Security do
   end
 
   defp handle_verify_timeout(adapter, :allow_with_flag) do
-    emit_decision(adapter, :allow_with_flag, :timeout_fallback)
     {:ok, %{"reason" => "timeout_fallback", "module" => inspect(adapter)}}
   end
 
   defp handle_verify_timeout(adapter, _fallback) do
-    emit_decision(adapter, :deny, :timeout_fallback)
     {:deny, :timeout_fallback, "#{inspect(adapter)} timed out"}
   end
 
   defp handle_verify_error(adapter, reason, :allow_with_flag) do
-    emit_decision(adapter, :allow_with_flag, :error_fallback)
-
     {:ok,
      %{"reason" => "error_fallback", "module" => inspect(adapter), "detail" => inspect(reason)}}
   end
 
   defp handle_verify_error(adapter, reason, _fallback) do
-    emit_decision(adapter, :deny, :error_fallback)
     {:deny, :error_fallback, "#{inspect(adapter)} errored: #{inspect(reason)}"}
   end
 
   defp handle_sanitize_timeout(adapter, :allow_with_flag, delivery) do
-    emit_decision(adapter, :allow_with_flag, :timeout_fallback)
     {:ok, delivery, %{"reason" => "timeout_fallback", "module" => inspect(adapter)}}
   end
 
   defp handle_sanitize_timeout(adapter, _fallback, _delivery) do
-    emit_decision(adapter, :deny, :timeout_fallback)
     {:error, {:security_denied, :sanitize, :timeout_fallback, "#{inspect(adapter)} timed out"}}
   end
 
   defp handle_sanitize_error(adapter, reason, :allow_with_flag, delivery) do
-    emit_decision(adapter, :allow_with_flag, :error_fallback)
-
     {:ok, delivery,
      %{"reason" => "error_fallback", "module" => inspect(adapter), "detail" => inspect(reason)}}
   end
 
   defp handle_sanitize_error(adapter, reason, _fallback, _delivery) do
-    emit_decision(adapter, :deny, :error_fallback)
-
     {:error,
      {:security_denied, :sanitize, :error_fallback,
       "#{inspect(adapter)} errored: #{inspect(reason)}"}}
-  end
-
-  defp emit_decision(module, decision, reason) do
-    Telemetry.emit([:bullx, :gateway, :security, :decision], %{count: 1}, %{
-      module: module,
-      decision: decision,
-      reason: reason
-    })
   end
 end

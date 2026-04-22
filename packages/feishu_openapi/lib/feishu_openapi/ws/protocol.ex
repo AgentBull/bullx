@@ -1,5 +1,13 @@
 defmodule FeishuOpenAPI.WS.Protocol do
-  @moduledoc false
+  @moduledoc """
+  Helpers for Feishu's websocket event protocol.
+
+  This module centralizes wire-level quirks that are easy to scatter across the
+  websocket client: handshake failure classification, config extraction from
+  server payloads, response envelope encoding, and the special headers Feishu
+  uses for business-RT and auth errors. It exists so `FeishuOpenAPI.WS.Client`
+  can stay focused on connection lifecycle instead of packet details.
+  """
 
   @header_biz_rt "biz_rt"
   @header_handshake_status "handshake-status"

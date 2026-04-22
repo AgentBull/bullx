@@ -6,20 +6,22 @@
 
 ## 1. TL;DR
 
-This RFC specifies the **egress half** of `BullXGateway`: the protocol, runtime, durability, and operations surface that turn an internal `BullXGateway.Delivery` command into a confirmed effect on an external channel, together with the durable failure path (DLQ) and the manual replay surface that drives it.
+This RFC specifies the **egress half** of `BullXGateway`: the protocol, runtime, and operations surface that turn an internal `BullXGateway.Delivery` command into a confirmed effect on an external channel, together with the durable failure path (DLQ) and the manual replay surface that drives it.
 
 The egress surface is defined by four primitives:
 
 1. **`BullXGateway.Delivery`** — a single struct describing one outbound effect (`:send` / `:edit` / `:stream`), JSON-serializable except for the streaming Enumerable.
 2. **`BullXGateway.Delivery.Outcome`** — the JSON-neutral result of one delivery, with three statuses (`:sent` / `:degraded` / `:failed`) and a Gateway-owned `error` map.
 3. **Two outcome carrier signals** — `com.agentbull.x.delivery.succeeded` and `com.agentbull.x.delivery.failed` — published on `BullXGateway.SignalBus` so any subscriber can correlate by `data.delivery_id`.
-4. **`ScopeWorker`** — one process per `{{adapter, tenant}, scope_id}` that serializes outbound work, owns the durable retry / DLQ state machine, and supervises the `:stream` Task.
+4. **`ScopeWorker`** — one process per `{{adapter, tenant}, scope_id}` that serializes outbound work from an **in-memory queue**, performs retries in memory, and writes a `gateway_dead_letters` row only on a terminal adapter failure that happens while ScopeWorker is alive.
 
-Durability is provided by four PostgreSQL tables (`gateway_dispatches` UNLOGGED, `gateway_attempts` UNLOGGED, `gateway_dead_letters` LOGGED, plus a small egress slice of `Retention`), with replay driven by `BullX.Gateway.replay_dead_letter/1`.
+The ScopeWorker is not a durable state machine. On a BEAM crash, any in-flight outbound work is simply lost — no outcome signal and no dead-letter row are emitted for it. Runtime + Oban is the business-layer retry authority and is responsible for re-dispatching outstanding deliveries after a restart.
 
-The inbound carrier path, the `BullXGateway.Adapter` behaviour, the `AdapterRegistry`, the `SignalBus`, the policy hook behaviours (`Gating` / `Moderation` / `Security`), and the `ControlPlane` GenServer skeleton are defined in **RFC 0002**. This RFC consumes those primitives and adds everything needed for outbound delivery, including the outbound subset of the `Store` behaviour, the `ScopeWorker` runtime, the `OutboundDeduper`, the DLQ schema and ops API, and the egress slice of `Retention`.
+Durability is provided by a single UNLOGGED PostgreSQL table (`gateway_dead_letters`, UNLOGGED) with replay driven by `BullX.Gateway.replay_dead_letter/1`. There is no in-flight `gateway_dispatches` table and no per-attempt `gateway_attempts` table.
 
-`exactly-once` is not a Gateway guarantee. The Gateway provides **envelope-level at-least-once with `delivery.id` dedupe and durable terminal-failure capture**. Business-level exactly-once is the responsibility of `BullX.Runtime` (Oban) and the consuming subsystem.
+The inbound carrier path, the `BullXGateway.Adapter` behaviour, the `AdapterRegistry`, the `SignalBus`, the policy hook behaviours (`Gating` / `Moderation` / `Security`), and the `ControlPlane` GenServer skeleton are defined in **RFC 0002**. This RFC consumes those primitives and adds everything needed for outbound delivery, including the dead-letter callbacks of the `Store` behaviour, the `ScopeWorker` runtime, the `OutboundDeduper`, the DLQ schema and ops API, and the egress slice of `Retention`.
+
+`exactly-once` is not a Gateway guarantee. The Gateway provides **envelope-level at-least-once with `delivery.id` dedupe and durable terminal-failure capture (while ScopeWorker is alive)**. Business-level exactly-once is the responsibility of `BullX.Runtime` (Oban) and the consuming subsystem.
 
 ## 2. Position and boundaries
 
@@ -29,25 +31,25 @@ The inbound carrier path, the `BullXGateway.Adapter` behaviour, the `AdapterRegi
 2. The `com.agentbull.x.delivery.succeeded` / `.failed` carrier signal envelope and `Outcome.to_signal_data/1` (§4).
 3. The egress callbacks of `BullXGateway.Adapter` (`deliver/2` / `stream/3`) and the call contract that `ScopeWorker` follows when invoking them (§6).
 4. The `BullX.Gateway.deliver/1` outbound pipeline (§6.3) and `BullX.Gateway.cancel_stream/1`.
-5. The `ScopeWorker` runtime — keying, lifecycle, monitor of adapter subtree, retry classification, backoff, exception boundary, crash recovery (§7.5).
+5. The in-memory `ScopeWorker` runtime — keying, lifecycle, monitor of adapter subtree, retry classification, backoff, exception boundary (§7.5).
 6. The `:stream` Task lifecycle and exit-reason mapping (§7.6).
 7. The `OutboundDeduper` (terminal-success-only ETS cache + sweep) and its DLQ-replay bypass rule (§7.7).
 8. The DLQ ops API and replay flow (§7.8).
-9. The four outbound tables and their migrations (§7.4).
+9. The `gateway_dead_letters` table and its migration (§7.4).
 10. The egress slice of `Retention` (§7.9).
 11. The egress acceptance criteria (§11).
 
 ### 2.2 What this RFC explicitly does **not** do
 
-The carrier path for ingress, the `Inputs.*` family, `InboundReceived` typed signal module, `publish_inbound/1`, the `Deduper` for `(source, id)`, the `gateway_trigger_records` and `gateway_dedupe_seen` tables, the policy pipeline hook behaviours, and the `Webhook.RawBodyReader` helper are **defined in RFC 0002** and are not redefined here.
+The carrier path for ingress, the `Inputs.*` family, `InboundReceived` typed signal module, `publish_inbound/1`, the `Deduper` for `(source, id)`, the `gateway_dedupe_seen` table, the policy pipeline hook behaviours, and the `Webhook.RawBodyReader` helper are **defined in RFC 0002** and are not redefined here.
 
 In addition, regardless of whether a topic touches ingress or egress, this RFC does not introduce any of the following (cross-cutting non-goals repeated only because they are load-bearing for understanding what `ScopeWorker` does and does not do):
 
 - **No Gateway-level multi-adapter fan-out.** A Runtime that wants the same content delivered through two channels must call `BullX.Gateway.deliver/1` twice, with two distinct `delivery.id` values. `ScopeWorker` never duplicates work across channels.
 - **No outbound `Moderation` behaviour.** Outbound policy is the single hook `Security.sanitize_outbound` (defined in RFC 0002). Heavier content shaping (tone, PII strip, persona) belongs in the LLM-context-aware Runtime layer, not in the egress carrier.
 - **No `failure_class` enum and no retry taxonomy in the protocol.** The Gateway exposes `error.kind` plus the conventional `details.retry_after_ms` and `details.is_transient`. Runtime decides business-level retry meaning from those plus its own context.
-- **No `:stream` mid-flight durability.** Only the close outcome is durable. A `:stream` `Dispatch` left in `:running` after a crash is dead-lettered with `error.kind = "stream_lost"`.
-- **No exactly-once semantics.** That belongs to Runtime + Oban. The Gateway provides durable terminal-failure capture and at-least-once with `delivery.id` dedupe.
+- **No in-flight outbound durability.** The ScopeWorker queue is in-memory only. On a BEAM crash, in-flight deliveries emit no outcome signal and no dead-letter row; Runtime + Oban re-dispatches.
+- **No exactly-once semantics.** That belongs to Runtime + Oban. The Gateway provides terminal-failure capture (while ScopeWorker is alive) and at-least-once with `delivery.id` dedupe.
 - **No audit-grade rejection persistence on the outbound side.** `Security.sanitize_outbound` denials are reported via telemetry and the synchronous return value; they are not written to PostgreSQL by this RFC.
 
 ## 3. Design constraints
@@ -55,7 +57,7 @@ In addition, regardless of whether a topic touches ingress or egress, this RFC d
 The egress runtime adopts the same four constraints that govern the rest of the Gateway:
 
 1. **Single-node.** No cross-node routing, no distributed bus, no global consistency. `ScopeWorker` and `OutboundDeduper` are local.
-2. **PostgreSQL-backed durability.** Outbound state lives in `BullX.Repo`. Three of the four egress tables are `UNLOGGED` (transactional + uniquely indexed but not WAL-backed); only `gateway_dead_letters` is `LOGGED`. dev/test uses Ecto Sandbox; there is no ETS-backed `Store` implementation. (See §7.4 for the table-by-table rationale.)
+2. **Minimal outbound persistence.** The only outbound PostgreSQL write is `gateway_dead_letters` (UNLOGGED) on a terminal adapter failure observed while ScopeWorker is alive. There is no in-flight dispatch table and no per-attempt table. dev/test uses Ecto Sandbox; there is no ETS-backed `Store` implementation. (See §7.4 for the rationale.)
 3. **Process isolation per scope.** A failure in one `ScopeWorker` (or in the adapter it invokes) must not affect any other `{{adapter, tenant}, scope_id}`. Adapter exceptions are caught at the `ScopeWorker` boundary; adapter subtree DOWN events terminate only the in-flight `:stream` Tasks owned by the affected scopes.
 4. **`BullXGateway.Delivery` is a struct distinct from inbound `Inputs.*`.** Outbound is not a mirror of inbound and is not modelled as a variant of `Jido.Signal`. The Delivery struct is the source-of-truth contract that Runtime constructs and the Gateway acts on.
 
@@ -77,7 +79,7 @@ Production timing:
 
 - `:send` / `:edit` returning `{:ok, Outcome}` from `adapter.deliver/2` → publish `delivery.succeeded`.
 - `:stream` reaching its close with `{:ok, Outcome}` from `adapter.stream/3` → publish `delivery.succeeded`.
-- `:stream` cut short by adapter crash, explicit cancel, or Task shutdown → publish `delivery.failed` with `error.kind ∈ {"stream_lost", "stream_cancelled", "adapter_restarted"}`.
+- `:stream` cut short by explicit cancel or adapter subtree DOWN (while ScopeWorker is alive) → publish `delivery.failed` with `error.kind ∈ {"stream_cancelled", "adapter_restarted"}`. (A BEAM crash is not in this list: there is no outcome signal in that case; Runtime + Oban re-dispatches.)
 - Any op failing — unsupported callback, adapter `{:error, _}`, adapter exception, contract violation, or terminal classification after retries — → publish `delivery.failed`.
 
 ### 4.1 Envelope
@@ -175,15 +177,15 @@ Field semantics:
 
 #### 5.1.1 The `:stream` op durability boundary
 
-The `content :: Enumerable.t()` of a `:stream` Delivery is a **process-local** value. It cannot be JSON-serialized, cannot be persisted into `gateway_dispatches.payload`, and cannot be reconstructed after a BEAM crash.
+The `content :: Enumerable.t()` of a `:stream` Delivery is a **process-local** value. It lives only inside the ScopeWorker process that runs it.
 
-Concretely:
+This is a special case of the general rule: **no in-flight outbound state is persisted at all**. The ScopeWorker queue — `:send`, `:edit`, and `:stream` deliveries alike — is entirely in-memory. A `:stream` delivery whose `content` is an Enumerable cannot be serialized; a `:send` or `:edit` delivery with a concrete `Content` value also lives only in the ScopeWorker until it terminates. If the BEAM (or the `ScopeWorker` process) crashes while a delivery is queued or running:
 
-- When `ScopeWorker` writes a `:stream` Dispatch to `gateway_dispatches`, the `payload` jsonb column contains only **delivery metadata**: `op`, `scope_id`, `thread_id`, `reply_to_external_id`, `target_external_id`, `caused_by_signal_id`, and `extensions`. **`content` is not included.**
-- The Enumerable lives only in memory, consumed by `ScopeWorker → adapter.stream/3`.
-- If the BEAM (or the `ScopeWorker`) crashes while a `:stream` Dispatch is in `:running`, recovery does **not** rewrite the row to `:queued`. The Enumerable is gone and cannot be replayed. The recovery path instead writes a `gateway_dead_letters` row with `final_error.kind = "stream_lost"`, deletes the Dispatch, and publishes `delivery.failed` (see §7.5 crash recovery and §7.6).
+- **No outcome signal is emitted.** The subscriber never hears from that `delivery.id`.
+- **No dead-letter row is written.** The failure is not captured in `gateway_dead_letters`.
+- **Runtime + Oban re-issues.** The business-layer retry authority sees that its Oban job never observed a terminal outcome and re-dispatches (typically with the same `delivery.id`; the OutboundDeduper cache is empty, so the fresh attempt proceeds through the adapter normally).
 
-This is the concrete realisation of "stream mid-flight is not durable, only the close outcome is" (§9.4).
+The only durable outbound artefact is a `gateway_dead_letters` row written on a terminal adapter failure that happens while ScopeWorker is alive (§7.5).
 
 ### 5.2 `Content`
 
@@ -195,6 +197,8 @@ end
 ```
 
 The `kind` enum and the per-kind minimum `body` shape are a **shared carrier contract** between outbound and inbound. The full body-shape table — including the **hard rule that every non-`:text` kind MUST carry a non-empty `body["fallback_text"]` string** — is normatively defined in **RFC 0002 §5.2** (the inbound `data["content"]` block contract). RFC 0003 reuses the same table verbatim for `BullXGateway.Delivery.Content.body`.
+
+On the inbound side, `content` is itself the canonical model-facing projection; there is no parallel summary string. The shared body contract therefore has to work for both "what the model reads" and "what the adapter sends".
 
 For orientation only, the six `kind` values are: `:text`, `:image`, `:audio`, `:video`, `:file`, `:card`. Media kinds carry a single `url` field (any URI scheme — `https://` or `data:`); the path / local-file abstraction is intentionally absent. Adapter implementations that receive byte buffers must upload or encode them into a URI before constructing a `Content`.
 
@@ -239,7 +243,7 @@ Adapter callbacks `deliver/2` and `stream/3` are restricted on the success path:
 
 - Success: return `{:ok, %BullXGateway.Delivery.Outcome{}}` matching `adapter_success_t()` (`status ∈ {:sent, :degraded}`, `error: nil`).
 - Failure: return `{:error, error_map}` (the `error_map` shape is specified below).
-- **Forbidden**: `{:ok, %Outcome{status: :failed}}`. `:failed` is a Gateway-owned status that may only be produced by `ScopeWorker` after wrapping an error, exception, contract violation, or attempts-exhausted classification. If an adapter returns `{:ok, %Outcome{status: :failed}}`, `ScopeWorker` treats it as a contract violation: the outcome is normalized to `:failed` with `error.kind = "contract"` and the Dispatch is dead-lettered.
+- **Forbidden**: `{:ok, %Outcome{status: :failed}}`. `:failed` is a Gateway-owned status that may only be produced by `ScopeWorker` after wrapping an error, exception, contract violation, or attempts-exhausted classification. If an adapter returns `{:ok, %Outcome{status: :failed}}`, `ScopeWorker` treats it as a contract violation: the outcome is normalized to `:failed` with `error.kind = "contract"` and the delivery is dead-lettered.
 
 #### 5.3.2 `error` map
 
@@ -255,7 +259,6 @@ Adapter callbacks `deliver/2` and `stream/3` are restricted on the success path:
     | "exception"
     | "unsupported"
     | "contract"
-    | "stream_lost"
     | "stream_cancelled"
     | "adapter_restarted"
     | "unknown",
@@ -406,7 +409,7 @@ Required at the runtime call site:
 The two-axis split established in RFC 0002 §6.2 has direct egress consequences:
 
 - **Op-capabilities** (`:send | :edit | :stream`) are **one-to-one with `BullX.Delivery.op()`** and are the **only** capability axis that `BullX.Gateway.deliver/1` consults during pre-flight. If the resolved adapter does not declare the requested op, the pipeline immediately publishes `delivery.failed{error.kind = "unsupported"}` and writes `gateway_dead_letters` (§6.3 step 3).
-- **Metadata capabilities** (`:reactions | :cards | :threads | …` — adapter-defined atoms) are **self-description for UI / Runtime / skill consumption only**. The Gateway **does not** pre-check them. Concretely, with the `:cards` example: a Runtime sends `Delivery{op: :send, content: %{kind: :card, …}}` to an adapter whose `capabilities/0` returns `[:send]` (no `:cards`). The Gateway **still casts** the Dispatch to `ScopeWorker` and invokes `adapter.deliver/2`. The adapter is expected to fall back to the card body's `body["fallback_text"]` and return `{:ok, %Outcome{status: :degraded, warnings: ["card_fallback_to_text"]}}`. **The only reason `deliver/1` rejects a `:send` is the absence of `:send` itself, never the absence of `:cards`.**
+- **Metadata capabilities** (`:reactions | :cards | :threads | …` — adapter-defined atoms) are **self-description for UI / Runtime / skill consumption only**. The Gateway **does not** pre-check them. Concretely, with the `:cards` example: a Runtime sends `Delivery{op: :send, content: %{kind: :card, …}}` to an adapter whose `capabilities/0` returns `[:send]` (no `:cards`). The Gateway **still casts** the delivery to `ScopeWorker` and invokes `adapter.deliver/2`. The adapter is expected to fall back to the card body's `body["fallback_text"]` and return `{:ok, %Outcome{status: :degraded, warnings: ["card_fallback_to_text"]}}`. **The only reason `deliver/1` rejects a `:send` is the absence of `:send` itself, never the absence of `:cards`.**
 
 This is the load-bearing realisation of the degradation principle (§6.4): degradation is decided by the adapter against the `fallback_text` contract, not by the Gateway against a metadata-capability table.
 
@@ -428,20 +431,18 @@ Steps:
 4. **`Security.sanitize_outbound`.** Invoke the configured `Security` adapter (behaviour defined in RFC 0002). Possible outcomes:
    - `{:ok, sanitized_delivery}` → continue with `sanitized_delivery`.
    - `{:ok, sanitized_delivery, metadata_map}` → continue with `sanitized_delivery`; the metadata map is consumed by the policy pipeline and is otherwise opaque to the egress runtime.
-   - `{:error, reason}` (or `:deny` shapes per the behaviour) → return `{:error, {:security_denied, :sanitize, reason_atom, description}}`. **Do not** write `gateway_dispatches`. **Do not** publish a `delivery.*` outcome (the synchronous return is the result; telemetry records the decision).
+   - `{:error, reason}` (or `:deny` shapes per the behaviour) → return `{:error, {:security_denied, :sanitize, reason_atom, description}}`. **Do not** publish a `delivery.*` outcome (the synchronous return is the result; telemetry records the decision).
 5. **`OutboundDeduper.seen?(delivery.id)`** (§7.7). The deduper caches **only terminal-success** outcomes. If the delivery.id is present:
    - Re-publish a `delivery.succeeded` carrying the cached outcome but with `warnings: ["duplicate_delivery_id"]` appended. The new `signal.id` is freshly generated (§4.2); `data.delivery_id` is the cached delivery.id.
    - **Do not** invoke the adapter.
    - Return `{:ok, delivery.id}`.
 
    If not present, continue.
-6. **Resolve `RetryPolicy`** from the `AdapterRegistry` config for this channel (default `max_attempts: 5`, `base_backoff_ms: 1000`, `max_backoff_ms: 30_000`).
-7. **`Store.put_dispatch/1`** with `%{id: delivery.id, status: :queued, attempts: 0, max_attempts: retry_policy.max_attempts, available_at: nil, payload: encode(delivery), …}` (UNLOGGED). On a unique-id conflict, treat as idempotent and return `{:ok, delivery.id}` without re-casting.
-8. **Resolve `ScopeWorker`** via `BullXGateway.ScopeRegistry`, starting one under `BullXGateway.Dispatcher` (a `DynamicSupervisor`) if absent. The registry uses the `{:via, …}` lookup-or-start pattern atomically to avoid losing a cast across a `terminate` race.
-9. **`GenServer.cast(scope_worker, {:enqueue, delivery.id})`.** The worker is responsible for re-reading the Dispatch from `Store` (it does not trust the cast payload to carry full state).
-10. **Return `{:ok, delivery.id}`.**
+6. **Resolve `ScopeWorker`** via `BullXGateway.ScopeRegistry`, starting one under `BullXGateway.Dispatcher` (a `DynamicSupervisor`) if absent. The registry uses the `{:via, …}` lookup-or-start pattern atomically to avoid losing a cast across a `terminate` race.
+7. **`ScopeWorker.enqueue(channel, scope_id, delivery)`** — `GenServer.cast` with the full `%BullXGateway.Delivery{}` struct; the worker stores it in its in-memory delivery map. No DB write happens at enqueue time.
+8. **Return `{:ok, delivery.id}`.**
 
-**DLQ replay does not enter this pipeline.** `replay_dead_letter/1` (§7.8) directly performs `put_dispatch + cast ScopeWorker`, **skipping step 3 (capability pre-check) and step 5 (OutboundDeduper)**:
+**DLQ replay does not enter this pipeline.** `replay_dead_letter/1` (§7.8) rebuilds the `%Delivery{}` from the dead-letter row and calls `ScopeWorker.enqueue/3` directly, **skipping step 3 (capability pre-check) and step 5 (OutboundDeduper)**:
 
 - Capability was already accepted at original enqueue. If a capability has since been removed from the adapter (e.g. `:cards` was dropped between enqueue and replay), degradation happens adapter-side via `fallback_text`, exactly as it would for a normal new delivery (§6.2).
 - OutboundDeduper would be empty of this delivery.id (only terminal successes are cached), but skipping the lookup avoids a misclassification path entirely. (See §7.7 for the full bypass rationale.)
@@ -459,11 +460,11 @@ These two rules are what make the metadata-capability axis usable as a **hint** 
 
 ### 7.1 Lifecycle (recap)
 
-The Gateway's startup ordering is fully specified in RFC 0002 §7.1. For the egress half, the relevant ordering is `Repo → Gateway.CoreSupervisor → Runtime.Supervisor → AdapterSupervisor`. `ScopeWorker` instances live under `BullXGateway.Dispatcher` (a `DynamicSupervisor` child of `CoreSupervisor`); they are started **lazily** on the first `deliver/1` for a given `{{adapter, tenant}, scope_id}`, plus a one-shot crash-recovery scan at boot (§7.5). They do not need `AdapterSupervisor` to be running in order to be started — the adapter is invoked through the registered module from `AdapterRegistry`, and a missing adapter subtree causes adapter callbacks to fail in the normal failure path.
+The Gateway's startup ordering is fully specified in RFC 0002 §7.1. For the egress half, the relevant ordering is `Repo → Gateway.CoreSupervisor → Runtime.Supervisor → AdapterSupervisor`. `ScopeWorker` instances live under `BullXGateway.Dispatcher` (a `DynamicSupervisor` child of `CoreSupervisor`); they are started **lazily** on the first `deliver/1` for a given `{{adapter, tenant}, scope_id}`. There is no boot-time recovery scan — the ScopeWorker holds no durable state, so there is nothing to rebuild at boot. Workers do not need `AdapterSupervisor` to be running in order to be started — the adapter is invoked through the registered module from `AdapterRegistry`, and a missing adapter subtree causes adapter callbacks to fail in the normal failure path.
 
 ### 7.2 Core supervisor children added by this RFC
 
-The `BullXGateway.CoreSupervisor` tree defined in RFC 0002 (with the inbound children: `ControlPlane`, `SignalBus`, `AdapterRegistry`, `Deduper`, `ControlPlane.InboundReplay`, the inbound slice of `Retention`, and `Telemetry`) is extended by the following children for the egress half:
+The `BullXGateway.CoreSupervisor` tree defined in RFC 0002 (with the inbound children: `ControlPlane`, `SignalBus`, `AdapterRegistry`, `Deduper`, the inbound slice of `Retention`, and `Telemetry`) is extended by the following children for the egress half:
 
 ```text
 BullXGateway.CoreSupervisor
@@ -485,101 +486,39 @@ Notes:
 - **`DLQ.ReplaySupervisor`** is a small subtree (a `Registry` + `N` worker GenServers, partitioned by `:erlang.phash2/2`); see §7.8.
 - **`Retention`** already exists from RFC 0002 for inbound retention; this RFC adds the outbound sweep responsibilities (§7.9).
 
-### 7.3 ControlPlane Store: outbound subset
+### 7.3 ControlPlane Store: dead-letter callbacks
 
-The `BullXGateway.ControlPlane.Store` behaviour is declared in RFC 0002 with both inbound and outbound callbacks (RFC 0002 implements only the inbound subset). The outbound subset that this RFC implements is:
+The `BullXGateway.ControlPlane.Store` behaviour is declared in RFC 0002. The dead-letter callbacks that this RFC implements are:
 
 ```elixir
 defmodule BullXGateway.ControlPlane.Store do
-  # … inbound callbacks (see RFC 0002) …
-
-  @callback put_dispatch(map()) :: :ok | {:error, term()}
-  @callback update_dispatch(id :: String.t(), changes :: map()) :: {:ok, map()} | {:error, term()}
-  @callback delete_dispatch(id :: String.t()) :: :ok | {:error, term()}
-  @callback fetch_dispatch(id :: String.t()) :: {:ok, map()} | :error
-  @callback list_dispatches_by_scope(channel :: BullX.Delivery.channel(),
-                                     scope_id :: String.t(),
-                                     statuses :: [atom()]) :: {:ok, [map()]}
-
-  # put_attempt/1 is an id-keyed upsert.
-  # First call for an id creates the running row (status: :running, started_at).
-  # Later call(s) for the same id finalize it (status, finished_at, outcome | error).
-  @callback put_attempt(map()) :: :ok | {:error, term()}
-  @callback list_attempts(dispatch_id :: String.t()) :: {:ok, [map()]}
+  # … dedupe callbacks (see RFC 0002) …
 
   @callback put_dead_letter(map()) :: :ok | {:error, term()}
   @callback fetch_dead_letter(dispatch_id :: String.t()) :: {:ok, map()} | :error
   @callback list_dead_letters(filters :: keyword()) :: {:ok, [map()]}
   @callback increment_dead_letter_replay_count(dispatch_id :: String.t()) :: :ok | {:error, term()}
+  @callback delete_old_dead_letters(before :: DateTime.t()) :: {:ok, non_neg_integer()}
 
-  @callback transaction((-> result)) :: {:ok, result} | {:error, term()}
+  @callback transaction((module() -> result)) :: {:ok, result} | {:error, term()}
 end
 ```
+
+There are no dispatch or attempt callbacks — those tables no longer exist. `purge_dead_letter/1` is exposed on `BullXGateway.ControlPlane.Store.Postgres` directly (as a convenience function), not as a behaviour callback.
 
 There is exactly one production implementation: `BullXGateway.ControlPlane.Store.Postgres`, backed by `BullX.Repo`. dev/test runs against the same Postgres adapter under Ecto Sandbox; there is no ETS-backed implementation. The behaviour is preserved for future pluggability and for Mox-based unit tests, **not** for environment differentiation.
 
 ### 7.4 Outbound table migrations
 
-Three new tables are added by this RFC. Two are `UNLOGGED` (transactional + uniquely indexed but not WAL-backed; truncated on PostgreSQL server crash) and one is `LOGGED`. Migrations for the UNLOGGED tables use `execute("CREATE UNLOGGED TABLE ...")` paired with `execute("DROP TABLE ...")` for `down`. The LOGGED table uses standard Ecto `create table(...)`.
+One table is added by this RFC: `gateway_dead_letters` (UNLOGGED). The migration uses `execute("CREATE UNLOGGED TABLE ...")` paired with `execute("DROP TABLE ...")` for `down`.
 
-#### 7.4.1 `gateway_dispatches` (UNLOGGED)
+#### 7.4.1 `gateway_dead_letters` (UNLOGGED)
 
-Holds in-flight outbound deliveries only; rows are deleted on terminal success or on dead-letter.
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | text PK | `delivery.id` |
-| `op` | text | `"send" \| "edit" \| "stream"` |
-| `channel_adapter` | text | denormalized for indexability |
-| `channel_tenant` | text | |
-| `scope_id` | text | |
-| `thread_id` | text NULL | |
-| `caused_by_signal_id` | text NULL | |
-| `payload` | jsonb | encoded `BullXGateway.Delivery` minus `:stream` `content` (see §5.1.1) |
-| `status` | text | `"queued" \| "running" \| "retry_scheduled"` (see below) |
-| `attempts` | integer | last attempt sequence number occupied (`0` before the first attempt, `1` after the first) |
-| `max_attempts` | integer | from resolved `RetryPolicy` |
-| `available_at` | timestamptz NULL | NULL for `:queued` and `:running`; set for `:retry_scheduled` |
-| `last_error` | jsonb NULL | last `error` map; informational |
-| `inserted_at` | timestamptz | |
-| `updated_at` | timestamptz | |
-
-**`status` enum is restricted to three values.** It does **not** include `:completed` or `:dead_lettered`. Terminal success deletes the row outright (§7.5 step 4). Terminal failure writes a `gateway_dead_letters` row inside the same transaction and deletes the dispatch (§7.5 step 6).
-
-Indexes:
-
-- `(status, available_at)` — drives the per-scope crash-recovery scan and any dispatcher polling.
-- `(channel_adapter, channel_tenant, scope_id, status, inserted_at)` — drives `list_dispatches_by_scope/3` and the per-scope worker startup scan.
-
-The `id` PRIMARY KEY also enforces `delivery.id` uniqueness across in-flight Dispatches (a belt-and-suspenders against the OutboundDeduper, see §7.7).
-
-#### 7.4.2 `gateway_attempts` (UNLOGGED)
-
-One row per attempted invocation of an adapter callback for a given dispatch.
+Holds terminally-failed deliveries as failure evidence. This is the only outbound-side Gateway table.
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `id` | text PK | `"#{dispatch_id}:#{attempt}"` |
-| `dispatch_id` | text | foreign reference (no FK constraint; both tables are UNLOGGED) |
-| `attempt` | integer | 1-based, monotonically increasing per `dispatch_id` |
-| `started_at` | timestamptz | |
-| `finished_at` | timestamptz NULL | NULL while `:running` |
-| `status` | text | `"running" \| "completed" \| "failed"` |
-| `outcome` | jsonb NULL | `Outcome.to_signal_data/1` projection on success |
-| `error` | jsonb NULL | `error` map on failure |
-| `inserted_at` | timestamptz | |
-
-`Store.put_attempt/1` is an **id-keyed upsert**. The first call for an id writes `status: :running` with `started_at`. Subsequent call(s) for the same id finalize it by writing `finished_at` and the terminal `status / outcome / error`. This matches the contract documented in the inbound RFC and is the mechanism that lets ScopeWorker keep one row per attempt instead of two (one start, one end).
-
-**Cross-DLQ-replay attempt-counter continuation.** `attempt` is a single monotonically increasing counter **per `delivery.id` lifetime**, not per Dispatch row. When a dead-letter is replayed (§7.8), `gateway_dispatches.attempts` is initialised from `gateway_dead_letters.attempts_total`, so the next attempt number is `attempts_total + 1`. `gateway_attempts.id` therefore continues the sequence: if the original Dispatch produced rows `dlv_X:1`, `dlv_X:2`, `dlv_X:3` and was dead-lettered with `attempts_total = 3`, the first replay attempt produces `dlv_X:4`. `gateway_dispatches.attempts` always holds the last-occupied number. (See §7.5 step 1 for the `next_attempt = attempts + 1` rule and §7.8 for the replay continuation.)
-
-#### 7.4.3 `gateway_dead_letters` (LOGGED)
-
-The single LOGGED outbound table. Holds terminally-failed Dispatches as durable failure evidence.
-
-| Column | Type | Notes |
-| --- | --- | --- |
-| `dispatch_id` | text PK | same value as the original `gateway_dispatches.id` / `delivery.id` |
+| `dispatch_id` | text PK | same value as the original `delivery.id` |
 | `op` | text | |
 | `channel_adapter` | text | |
 | `channel_tenant` | text | |
@@ -588,26 +527,23 @@ The single LOGGED outbound table. Holds terminally-failed Dispatches as durable 
 | `caused_by_signal_id` | text NULL | |
 | `payload` | jsonb | the original Delivery payload (minus `:stream` Enumerable, per §5.1.1) |
 | `final_error` | jsonb | the terminal `error` map |
-| `attempts_total` | integer | cumulative attempt count for this `dispatch_id` across all replay rounds |
+| `attempts_total` | integer | cumulative attempt count for this delivery before it was dead-lettered |
 | `attempts_summary` | jsonb NULL | optional rollup of the last N error maps for human inspection |
 | `dead_lettered_at` | timestamptz | |
 | `replay_count` | integer DEFAULT 0 | incremented by `replay_dead_letter/1` |
-| `archived_at` | timestamptz NULL | set by `archive_dead_letter/1`; excluded from normal `list_dead_letters/1` unless `include_archived: true` |
 
 Indexes:
 
 - `(channel_adapter, channel_tenant, scope_id, dead_lettered_at DESC)` — drives `list_dead_letters/1` filtered by channel and scope.
-- `(dead_lettered_at DESC) WHERE archived_at IS NULL` — drives the default ops feed and the 90-day Retention sweep.
+- `(dead_lettered_at DESC)` — drives the default ops feed and the 90-day Retention sweep.
 
-#### 7.4.4 Rationale for UNLOGGED vs. LOGGED
+#### 7.4.2 Rationale for UNLOGGED
 
 | Table | Persistence | Why |
 | --- | --- | --- |
-| `gateway_dispatches` | **UNLOGGED** | Holds only in-flight Dispatches; deleted on terminal success or dead-letter. The business source of truth is the Runtime's Oban job that issued the Delivery. Crash-truncate is recoverable: Runtime re-issues. |
-| `gateway_attempts` | **UNLOGGED** | Per-attempt debug/telemetry detail. Time-based 7-day retention (independent of dispatch termination) so `list_attempts/1` keeps recent retry history available. Crash-truncate ≈ losing telemetry. |
-| `gateway_dead_letters` | **LOGGED** | The unique LOGGED outbound table. Failure evidence that requires human action MUST survive a server crash; truncating these would lose the only durable record of "Gateway gave up". |
+| `gateway_dead_letters` | **UNLOGGED** | Failure evidence for ops; loss on unclean server crash is acceptable because Runtime + Oban re-dispatches, and a fresh terminal failure writes a new row. Surviving clean shutdowns and ordinary operation is all the carrier owes here. |
 
-The UNLOGGED choice for the in-flight tables is a deliberate trade against per-row WAL cost. The Gateway's reliability boundary is **carrier-level correctness** (no inbound is dropped before the external source ack; no outbound terminal failure is dropped). It is **not** "every intermediate state is persisted across server crashes". Runtime + Oban is the business retry layer; the adapter is the external-source ack layer; UNLOGGED + the LOGGED dead-letter table is what the carrier actually owes.
+The whole Gateway schema is now two UNLOGGED tables: `gateway_dedupe_seen` (RFC 0002) and `gateway_dead_letters` (this RFC). The Gateway's reliability boundary is **carrier-level correctness** (the inbound policy pipeline runs before publish; dedupe holds across retries; terminal outbound failures while ScopeWorker is alive are observable in the DLQ). It is **not** "every intermediate state is persisted across server crashes". Runtime + Oban is the business retry layer; the adapter is the external-source ack layer; the DLQ is what the carrier owes for failures it has given up on.
 
 ### 7.5 Egress: `Dispatcher` + `ScopeWorker`
 
@@ -615,55 +551,40 @@ The UNLOGGED choice for the in-flight tables is a deliberate trade against per-r
 
 #### 7.5.1 Responsibilities
 
-- Serialize Dispatches for the same `{channel, scope_id}`.
+- Serialize deliveries for the same `{channel, scope_id}`.
+- Hold the in-memory queue (list of `delivery.id` values) and the delivery map (`delivery.id -> %Delivery{}`).
+- Track the per-delivery attempt counter in process state.
 - Track the `Task` ref of any in-flight `:stream` so it can be cancelled.
 - `Process.monitor` the adapter subtree anchor pid (the adapter exposes this via `context`). On adapter subtree DOWN, terminate any in-flight `:stream` Task owned by this ScopeWorker.
-- Catch any exception thrown by an adapter callback (§7.5.4) and produce a normalized `Outcome{status: :failed}`.
+- Catch any exception thrown by an adapter callback (§7.5.3) and produce a normalized `Outcome{status: :failed}`.
 - Hibernate after 60s idle; terminate after 5 minutes idle. The `ScopeRegistry` via-tuple lookup-or-start handles the terminate-races (a delivery cast that arrives during termination starts a fresh worker).
 
-#### 7.5.2 Crash recovery on `init/1`
+#### 7.5.2 Per-attempt execution
 
-Every ScopeWorker starts by reading its scope's pending Dispatches:
+`ScopeWorker.enqueue(channel, scope_id, delivery)` casts the full `%Delivery{}` to the worker, which stores it in the in-memory delivery map and appends `delivery.id` to the queue. When the worker is idle it takes the head off the queue and starts an attempt.
 
-```elixir
-{:ok, rows} = Store.list_dispatches_by_scope(channel, scope_id, [:queued, :retry_scheduled, :running])
-```
+For each delivery the worker handles:
 
-The handling is split by row status and op:
-
-- **`:queued` / `:retry_scheduled`** → schedule by `available_at` (`:queued` runs immediately; `:retry_scheduled` waits until `available_at`). These are the normal pending paths.
-- **`:running` with `op = :send | :edit`** → treat as "crash interrupted". Rewrite to `:queued` with `available_at = now()`. The `attempts` counter is not changed; the next attempt classification handles convergence (an effectively-stuck Dispatch will hit `max_attempts` and be dead-lettered).
-- **`:running` with `op = :stream`** → **do NOT rewrite to `:queued`**. The Enumerable is gone (§5.1.1). The recovery path is terminal:
-  - Read the current `attempts` value `n`.
-  - Inside `Store.transaction`: `put_attempt(%{id: "#{dispatch_id}:#{n}", status: :failed, finished_at: now, error: %{"kind" => "stream_lost", "message" => "Stream interrupted by crash; enumerable not durable"}})` + `put_dead_letter(%{dispatch_id: id, final_error: %{"kind" => "stream_lost", ...}, attempts_total: n, …})` + `delete_dispatch(id)`.
-  - Publish `delivery.failed{error.kind = "stream_lost"}` on `SignalBus`.
-
-In addition to per-worker `init/1`, the `ControlPlane` runs a **boot-time one-shot scan** that groups all `:queued` and `:retry_scheduled` rows by `{channel, scope_id}` and ensures a `ScopeWorker` is started for each group (so unattended Dispatches do not wait for a fresh `deliver/1` to wake their scope).
-
-#### 7.5.3 Per-attempt execution
-
-For each Dispatch the worker handles:
-
-1. `next_attempt = attempts + 1`. `Store.update_dispatch(id, %{status: :running, attempts: next_attempt})`.
-2. `Store.put_attempt(%{id: "#{dispatch_id}:#{next_attempt}", dispatch_id: dispatch_id, attempt: next_attempt, status: :running, started_at: now})`.
-3. Invoke the adapter inside the exception boundary (§7.5.4):
+1. Increment the in-memory attempt counter for this `delivery.id`.
+2. Invoke the adapter inside the exception boundary (§7.5.3):
    - `:send` / `:edit` → `adapter.deliver(delivery, context)`.
    - `:stream` → `Task.Supervisor.async_nolink(..., fn -> adapter.stream(delivery, enumerable, context) end)` and await the Task; see §7.6 for Task lifecycle.
-4. **Success path.** Adapter returned `{:ok, %Outcome{status: :sent | :degraded}}`:
-   - Inside `Store.transaction`: `put_attempt(%{id: "#{dispatch_id}:#{next_attempt}", status: :completed, finished_at: now, outcome: outcome_map})` and `delete_dispatch(id)`.
+3. **Success path.** Adapter returned `{:ok, %Outcome{status: :sent | :degraded}}`:
    - Publish `delivery.succeeded` on `SignalBus` (envelope per §4.1).
    - **`OutboundDeduper.mark_success(delivery.id, outcome)`** (the **only** place mark_success is called; see §7.7).
-5. **Retryable failure.** Adapter returned `{:error, error_map}` classified as retryable AND `next_attempt < max_attempts`:
-   - `put_attempt(%{id: "#{dispatch_id}:#{next_attempt}", status: :failed, finished_at: now, error: error_map})`.
-   - Compute backoff (§7.5.5).
-   - `update_dispatch(id, %{status: :retry_scheduled, available_at: now + backoff_ms, last_error: error_map})`.
-   - `Process.send_after(self(), {:run, id}, backoff_ms)`.
-6. **Terminal-or-exhausted failure.** Either retryable AND `next_attempt >= max_attempts`, or non-retryable:
-   - Inside `Store.transaction`: `put_attempt(%{id: "#{dispatch_id}:#{next_attempt}", status: :failed, finished_at: now, error: error_map})`, `put_dead_letter(%{dispatch_id: id, final_error: error_map, attempts_total: next_attempt, payload: dispatch.payload, …})`, and `delete_dispatch(id)`.
+   - Forget the delivery from the in-memory map.
+4. **Retryable failure.** Adapter returned `{:error, error_map}` classified as retryable AND `next_attempt < max_attempts`:
+   - Compute backoff (§7.5.4).
+   - `Process.send_after(self(), {:run, delivery.id}, backoff_ms)`.
+5. **Terminal-or-exhausted failure.** Either retryable AND `next_attempt >= max_attempts`, or non-retryable:
+   - `Store.put_dead_letter(%{dispatch_id: delivery.id, final_error: error_map, attempts_total: next_attempt, payload: encode_delivery_payload(delivery), …})`.
    - Publish `delivery.failed` on `SignalBus`.
    - **Do not** mark `OutboundDeduper`.
+   - Forget the delivery from the in-memory map.
 
-#### 7.5.4 Adapter exception boundary
+**No crash recovery from the database.** The ScopeWorker has no `init/1` scan and the `ControlPlane` has no boot-time sweep for outbound work. All in-flight state lives in ScopeWorker process memory. On a BEAM crash the state is lost; Runtime + Oban observes that its Oban job never received a terminal outcome signal and re-dispatches.
+
+#### 7.5.3 Adapter exception boundary
 
 Every adapter call is wrapped:
 
@@ -679,15 +600,15 @@ end
 
 The result is fed back into the success / retryable / terminal classification. An adapter that raises is observationally indistinguishable from one that returned `{:error, %{"kind" => "exception", ...}}`. ScopeWorker itself does not crash on adapter exceptions.
 
-#### 7.5.5 Retry classification and backoff
+#### 7.5.4 Retry classification and backoff
 
 The default `BullXGateway.RetryPolicy`:
 
 - **Retryable kinds**: `error.kind ∈ {"network", "rate_limit"}` plus `"exception"` and `"unknown"`.
 - **Terminal kinds**: `error.kind ∈ {"auth", "payload", "unsupported", "contract"}`.
-- **`stream_lost` and `stream_cancelled`** are terminal (no automatic retry). DLQ replay can still re-issue them, but there is no auto-retry for these.
+- **`stream_cancelled`** is terminal (no automatic retry). DLQ replay can still re-issue it, but there is no auto-retry.
 
-Per-adapter `RetryPolicy` overrides may extend or restrict these sets; the `RetryPolicy` resolved in `deliver/1` step 6 is what `ScopeWorker` consults.
+Per-adapter `RetryPolicy` overrides may extend or restrict these sets; the `RetryPolicy` resolved by the ScopeWorker from the `AdapterRegistry` entry is what the retry classifier consults.
 
 Backoff:
 
@@ -734,9 +655,9 @@ ScopeWorker handles Task `:DOWN` messages:
   - If `cancel_stream/1` initiated the shutdown → synthesize `{:error, %{"kind" => "stream_cancelled", "message" => "Adapter did not return before shutdown"}}` and route to step 6.
   - If a monitored adapter subtree DOWN initiated the shutdown → synthesize `{:error, %{"kind" => "adapter_restarted", "message" => "Adapter subtree DOWN during stream"}}` and route to step 6.
 
-#### 7.6.4 Mid-flight is not durable; only close is
+#### 7.6.4 Mid-flight is not durable
 
-There is **no per-chunk persistence**. While `Dispatch.status = :running` for a `:stream`, no intermediate `gateway_attempts` rows are written for chunk-level progress; only one attempt row exists per Task lifetime, finalized on close (§7.5 step 4 or 6). This is the operating definition of "stream mid-flight is not durable, only the close outcome is" (§9.4).
+There is no per-chunk persistence and no per-attempt persistence. A `:stream` attempt lives entirely in the ScopeWorker process memory + the `Task` process. On close, either a terminal success (no DB write; only the DLQ on terminal failure) or a terminal failure (`gateway_dead_letters` row) is produced.
 
 ### 7.7 `OutboundDeduper`
 
@@ -748,16 +669,16 @@ A dedicated GenServer owning a public ETS table, plus a periodic sweep timer.
 
 #### 7.7.1 The terminal-success-only rule
 
-`OutboundDeduper` caches **only terminal success**. Concretely, the **only** moment that writes into the cache is `ScopeWorker` after a successful adapter call has been fully recorded:
+`OutboundDeduper` caches **only terminal success**. Concretely, the **only** moment that writes into the cache is `ScopeWorker` after a successful adapter call has published `delivery.succeeded`:
 
-> Inside the success path (§7.5 step 4), **after** `put_attempt(completed) + delete_dispatch + publish delivery.succeeded` have all completed, call `OutboundDeduper.mark_success(delivery.id, outcome)`.
+> Inside the success path (§7.5 step 3), **after** `publish delivery.succeeded` has completed, call `OutboundDeduper.mark_success(delivery.id, outcome)`.
 
 Things that explicitly **do not** mark:
 
 - `deliver/1` enqueue does not mark. Marking on enqueue would let DLQ replays be falsely shortcut as duplicates.
 - Adapter failure (`{:error, _}` or normalized `Outcome{status: :failed}`) does not mark.
 - Terminal dead-letter does not mark.
-- `:retry_scheduled` does not mark (the in-flight retry has not produced a terminal success).
+- Retry-scheduled attempts do not mark (the in-flight retry has not produced a terminal success).
 
 #### 7.7.2 Read path
 
@@ -774,17 +695,13 @@ Things that explicitly **do not** mark:
 - A hit in OutboundDeduper would always be a historical success. But the dispatch being replayed is by construction in `gateway_dead_letters`, i.e. a historical failure. The state cannot be both. Skipping the lookup avoids any chance of misclassifying "this delivery.id failed last time, now please retry" as "we already succeeded for this delivery.id".
 - Replays should run end-to-end through the adapter exactly like a fresh attempt (modulo the skipped capability pre-check). After a successful replay, `ScopeWorker` marks OutboundDeduper as it does on any other terminal success.
 
-#### 7.7.4 Belt-and-suspenders with `gateway_dispatches.id` UNIQUE
+#### 7.7.4 No mark on inbound or outbound failure
 
-The `gateway_dispatches.id` PRIMARY KEY enforces one in-flight Dispatch per `delivery.id`. If a fresh `deliver/1` arrives with a `delivery.id` that is already in-flight (and so not yet in OutboundDeduper because no terminal success has happened), the unique-key conflict on `Store.put_dispatch/1` (§6.3 step 7) is the second line of defense, treated as idempotent. OutboundDeduper handles the post-success window; the unique key handles the in-flight window.
-
-#### 7.7.5 No mark on inbound or outbound failure
-
-For symmetry with the inbound path: failure-to-publish never leaves a positive dedupe trace. On the outbound side this means a failed adapter attempt or a terminal dead-letter never marks `OutboundDeduper`. A subsequent fresh `deliver/1` for the same `delivery.id` is therefore not misclassified as a duplicate; the `gateway_dispatches.id` uniqueness handles the in-flight collision.
+For symmetry with the inbound path: failure-to-publish never leaves a positive dedupe trace. On the outbound side this means a failed adapter attempt or a terminal dead-letter never marks `OutboundDeduper`. A subsequent fresh `deliver/1` with the same `delivery.id` is cast to the ScopeWorker, which simply enqueues it as a fresh delivery. (There is no in-flight UNIQUE constraint, so the caller is responsible for not re-issuing a `delivery.id` already known to be mid-flight; Runtime + Oban's idempotency policy determines this.)
 
 ### 7.8 DLQ + Replay
 
-Four ops APIs:
+Three ops APIs:
 
 ```elixir
 @spec BullX.Gateway.replay_dead_letter(dispatch_id :: String.t()) ::
@@ -792,13 +709,12 @@ Four ops APIs:
         | {:error, :not_found | term()}
 
 @spec BullX.Gateway.list_dead_letters(opts :: keyword()) :: {:ok, [map()]}
-# opts: :channel, :scope_id, :since, :until, :limit, :include_archived
+# opts: :channel, :scope_id, :since, :until, :limit
 
-@spec BullX.Gateway.archive_dead_letter(dispatch_id :: String.t()) :: :ok | {:error, term()}
 @spec BullX.Gateway.purge_dead_letter(dispatch_id :: String.t()) :: :ok | {:error, term()}
 ```
 
-`list_dead_letters/1` defaults to non-archived rows ordered by `dead_lettered_at DESC`. `archive_dead_letter/1` sets `archived_at = now()` (excludes the row from the default feed without deleting it). `purge_dead_letter/1` deletes the row outright (use rarely — this destroys the only durable failure evidence).
+`list_dead_letters/1` returns rows ordered by `dead_lettered_at DESC`. `purge_dead_letter/1` deletes the row outright (use rarely — this destroys the only durable failure evidence).
 
 #### 7.8.1 `replay_dead_letter/1` flow
 
@@ -807,40 +723,17 @@ Routing: requests are dispatched to one of `N` `ReplayWorker` partitions by `:er
 On a replay request:
 
 1. `Store.fetch_dead_letter(dispatch_id)`. If not present → `{:error, :not_found}`.
-2. Inside `Store.transaction`:
-   - `Store.put_dispatch(%{
-       id: dispatch_id,
-       status: :queued,
-       attempts: dead_letter.attempts_total,            # continuation, not reset
-       max_attempts: dead_letter.max_attempts || default,
-       available_at: now(),
-       last_error: nil,
-       payload: dead_letter.payload,
-       op: dead_letter.op,
-       channel_adapter: dead_letter.channel_adapter,
-       channel_tenant: dead_letter.channel_tenant,
-       scope_id: dead_letter.scope_id,
-       thread_id: dead_letter.thread_id,
-       caused_by_signal_id: dead_letter.caused_by_signal_id
-     })` — re-enters UNLOGGED `gateway_dispatches`. **`attempts` is initialised from `attempts_total`, not zero.** The next attempt issued by ScopeWorker is `attempts_total + 1`, preserving the cross-replay monotonic numbering for `gateway_attempts` rows.
-   - `Store.increment_dead_letter_replay_count(dispatch_id)` — the dead-letter row is **preserved** as audit evidence; only `replay_count` is incremented.
-3. Cast the `ScopeWorker` for `{channel, scope_id}` (start it if absent). The same code path as fresh `deliver/1` from this point onward, **except** capability pre-check is skipped (it was already passed at original enqueue) and OutboundDeduper is bypassed (§7.7.3). Degradation that becomes necessary because adapter capabilities have changed is handled adapter-side via `fallback_text` (§6.2).
-4. Return `{:ok, %{status: :replayed, dispatch: dispatch_row}}`.
+2. `Store.increment_dead_letter_replay_count(dispatch_id)` — the dead-letter row is **preserved** as audit evidence; only `replay_count` is incremented.
+3. Rebuild a `%BullXGateway.Delivery{}` from the dead-letter row (using `ScopeWorker.decode_delivery_from_dead_letter/1`) and call `ScopeWorker.enqueue(channel, scope_id, delivery)`. The same code path as fresh `deliver/1` from this point onward, **except** capability pre-check is skipped (it was already passed at original enqueue) and OutboundDeduper is bypassed (§7.7.3). Degradation that becomes necessary because adapter capabilities have changed is handled adapter-side via `fallback_text` (§6.2).
+4. Return `{:ok, %{status: :replayed, delivery: rebuilt_delivery}}`.
 
-If a replay itself terminally fails, the new termination upserts the dead-letter row:
+If a replay itself terminally fails, the ScopeWorker's dead-letter write performs a row-level upsert on `dispatch_id` (preserving `replay_count`, overwriting `final_error` and `attempts_total` with the fresh values, and refreshing `dead_lettered_at`). The audit trail keeps growing across multiple replay rounds because `replay_count` was incremented on entry before the adapter was re-invoked.
 
-```sql
-ON CONFLICT (dispatch_id) DO UPDATE
-  SET final_error = EXCLUDED.final_error,
-      attempts_total = gateway_dead_letters.attempts_total + (EXCLUDED.attempts_total - prior),
-      dead_lettered_at = now()
-```
-
-`replay_count` is preserved (already incremented on entry) so the audit trail keeps growing across multiple replay rounds.
+**`:stream` replay caveat.** A `:stream` delivery rebuilt from a dead-letter row has `content: nil` (the original `Enumerable` was process-local and is not stored). An adapter whose `stream/3` cannot produce a useful result from an absent content payload should observe this and return `{:error, %{"kind" => "payload"}}`, which lands the delivery back in the DLQ. For practical purposes, `:stream` replays are usually not meaningful and should be gated by operator choice.
 
 #### 7.8.2 Access control v1
 
-This RFC does not implement authz on the DLQ ops. The functions are intended to be called from internal Gateway callers (BullXWeb operator console, REPL, ops tooling). The `BullXGateway` namespace reserves a `:bullx, :gateway_dlq_authz` callback hook for a future RFC to wrap these calls behind a real policy.
+Access control is out of scope for this RFC; callers are internal (BullXWeb operator console, REPL, ops tooling).
 
 ### 7.9 Retention (egress slice)
 
@@ -848,11 +741,9 @@ The `BullXGateway.Retention` GenServer (existing as of RFC 0002 for inbound rete
 
 Egress operations:
 
-- **`gateway_dispatches`** — no time-based sweep is needed in normal operation (rows are deleted immediately on terminal success or dead-letter). For belt-and-suspenders against orphaned `:retry_scheduled` rows whose ScopeWorker died without restarting (extremely rare given the boot-time recovery scan), Retention may delete rows older than 7 days; this is a backstop, not a primary path.
-- **`gateway_attempts`** — time-based 7-day retention: `DELETE FROM gateway_attempts WHERE inserted_at < now() - interval '7 days'`. **Not** cascaded from dispatch deletion. This is deliberate: after a dispatch succeeds and is deleted, `list_attempts(dispatch_id)` should still return the recent retry history for ops debugging. Seven days is the default debug window.
-- **`gateway_dead_letters`** — `DELETE FROM gateway_dead_letters WHERE dead_lettered_at < now() - interval '90 days' AND archived_at IS NULL`. Archived rows follow an independent policy (a separate operator-driven cleanup); the default is to keep them indefinitely.
+- **`gateway_dead_letters`** — `DELETE FROM gateway_dead_letters WHERE dead_lettered_at < now() - interval '90 days'`.
 
-The inbound retention rules (`gateway_trigger_records`, `gateway_dedupe_seen`) are defined in RFC 0002 and are not duplicated here.
+The inbound retention rule (`gateway_dedupe_seen`) is defined in RFC 0002 and is not duplicated here.
 
 ## 8. Egress sequence walk-throughs
 
@@ -866,14 +757,13 @@ Runtime constructs %BullXGateway.Delivery{}
      - Capabilities pre-check (op-capability only; metadata-capabilities not consulted)
      - Security.sanitize_outbound
      - OutboundDeduper.seen?(delivery.id)
-     - Store.put_dispatch (UNLOGGED)
-     - ScopeWorker cast
+     - ScopeWorker.enqueue(channel, scope_id, delivery)   # in-memory cast
   -> ScopeWorker executes
      - adapter.deliver(delivery, ctx)            for :send / :edit
      - adapter.stream(delivery, enumerable, ctx) for :stream (via Task.async_nolink)
-  -> Success            : put_attempt(completed) + delete_dispatch + publish delivery.succeeded + OutboundDeduper.mark_success
-  -> Failure (retryable): put_attempt(failed) + update_dispatch(retry_scheduled, backoff)
-  -> Failure (terminal) : put_attempt(failed) + put_dead_letter (LOGGED) + delete_dispatch + publish delivery.failed
+  -> Success            : publish delivery.succeeded + OutboundDeduper.mark_success
+  -> Failure (retryable): Process.send_after({:run, id}, backoff)   # in memory
+  -> Failure (terminal) : put_dead_letter (UNLOGGED) + publish delivery.failed
 ```
 
 The canonical pattern for constructing a Delivery from an inbound signal's `data.reply_channel`:
@@ -897,7 +787,7 @@ if reply do
 end
 ```
 
-Note: `String.to_existing_atom/1` is used because the adapter atom must already exist in the running system (it was registered in `AdapterRegistry`). Construction never invents new atoms from inbound payload data.
+Note: `String.to_existing_atom/1` is used because the adapter atom must already exist in the running system (it was registered in `AdapterRegistry`). Construction never invents new atoms from inbound payload data. Runtime may choose to derive the outbound `content` from inbound `data["content"]` when that makes sense, but the carrier contract does not require a one-to-one echo.
 
 ### 8.2 Streaming reply pipeline (LLM token stream → Feishu streaming card)
 
@@ -912,18 +802,18 @@ Runtime constructs %BullXGateway.Delivery{op: :stream, content: enumerable_of_ch
      4. cardkit.v1.cardElement.content incremental updates (with monotonic sequence + UUID v7)
      5. enumerable closed -> cardkit.v1.card.settings(streaming_mode: false, summary)
      6. Return {:ok, %Outcome{status: :sent, external_message_ids: [om_xxx], primary_external_id: "om_xxx"}}
-  -> ScopeWorker put_attempt(completed) + delete_dispatch + publish delivery.succeeded + OutboundDeduper.mark_success
+  -> ScopeWorker publish delivery.succeeded + OutboundDeduper.mark_success
 
 Cancel path:
   Runtime calls BullX.Gateway.cancel_stream(delivery.id)
   -> ScopeWorker Task.shutdown(task, :brutal_kill)
   -> Adapter stream reducer observes exit -> attempts to patch card to "Cancelled"
                                            -> returns {:error, %{"kind" => "stream_cancelled"}}
-  -> ScopeWorker put_attempt(failed) + put_dead_letter + delete_dispatch + publish delivery.failed
+  -> ScopeWorker put_dead_letter + publish delivery.failed
 
 Soft-interrupt path:
   Runtime does NOT cancel; instead enqueues new %Delivery{op: :edit, target_external_id: om_xxx, content: new_content}
-  -> The new Delivery is queued in gateway_dispatches
+  -> The new Delivery sits in the ScopeWorker's in-memory queue
   -> Same-scope serialization holds the :edit until the :stream completes
   -> :edit then runs against the same external message
 ```
@@ -933,23 +823,23 @@ Soft-interrupt path:
 The reliability framing established in RFC 0002 §9 carries over. The egress-relevant items are:
 
 1. **Adapter listener supervision.** Adapter subtrees live under `BullXGateway.AdapterSupervisor` (RFC 0002). A crashed adapter restarts and its in-flight `:stream` Tasks are terminated via the `Process.monitor` path on each ScopeWorker; the resulting `Outcome{error.kind: "adapter_restarted"}` is dead-lettered. Egress of one adapter does not affect any other adapter's egress.
-2. **Durable outbound attempts.** Every adapter call produces a `gateway_attempts` row (`status: :running` upsert at start, finalized at end). On terminal failure or attempts-exhaustion, a `gateway_dead_letters` row is written **inside the same transaction** that deletes the dispatch.
-3. **DLQ + manual replay.** `BullX.Gateway.replay_dead_letter/1` re-queues a dead-lettered Dispatch under the same `delivery.id`, continuing the attempt counter from `attempts_total`. The dead-letter row is preserved (`replay_count` increments).
-4. **Outbound dedupe.** `delivery.id` dedupe is enforced by two complementary mechanisms: `OutboundDeduper` (terminal-success-only ETS, 5–10 min TTL) and `gateway_dispatches.id` UNIQUE (in-flight defense). Failure paths never produce a positive dedupe trace.
-5. **Telemetry (egress).** `delivery.succeeded`, `delivery.failed`, queue length per scope, ScopeWorker hibernate / terminate, OutboundDeduper hits / sweep, DLQ writes, replay outcomes, and Retention sweep counts all emit `:telemetry` events.
-6. **UNLOGGED crash semantics (egress subset).** `gateway_dispatches` and `gateway_attempts` are UNLOGGED. On a real PostgreSQL server crash they are truncated. `gateway_dead_letters` is LOGGED and survives. The acceptable loss of in-flight Dispatches is covered by Runtime + Oban re-issue at the business layer.
-7. **Envelope-level reliability framing.** The Gateway's outbound contract is **at-least-once with `delivery.id` dedupe and durable terminal-failure capture**. `exactly-once` is not a Gateway guarantee; it is a property the consuming subsystem builds on top of `delivery.id` correlation and outcome subscription.
+2. **Terminal-failure DLQ.** On terminal failure or attempts-exhaustion, a `gateway_dead_letters` row is written by the ScopeWorker while it is alive. In-flight deliveries (anything in the ScopeWorker's in-memory queue or mid-attempt) are not persisted; a BEAM crash loses them and emits nothing. Runtime + Oban is responsible for re-dispatching.
+3. **DLQ + manual replay.** `BullX.Gateway.replay_dead_letter/1` rebuilds a Delivery from the dead-letter row and casts the ScopeWorker for the `{channel, scope_id}`. The dead-letter row is preserved (`replay_count` increments) until retention deletes it.
+4. **Outbound dedupe.** `delivery.id` dedupe is enforced by `OutboundDeduper` (terminal-success-only ETS, 5–10 min TTL). Failure paths never produce a positive dedupe trace. The Gateway does not provide in-flight collision protection on `delivery.id`; the caller (Runtime + Oban) is expected to not re-issue a `delivery.id` already known to be in-flight.
+5. **Telemetry (egress).** The egress surface contributes two items to the Gateway telemetry set defined in RFC 0002 §6.8.6: the `[:bullx, :gateway, :deliver, …]` span (synchronous enqueue verdict) and `[:bullx, :gateway, :delivery, :finished]` (one event per terminal delivery, with `measurements.attempts` and `metadata.outcome ∈ {:sent, :degraded, :failed}`). No per-attempt, per-retry, queue-length, hibernate, OutboundDeduper-hit, or DLQ-write telemetry is emitted; those are inferrable from the terminal event or from Bus-side `delivery.succeeded` / `delivery.failed` subscribers.
+6. **UNLOGGED crash semantics (egress subset).** `gateway_dead_letters` is UNLOGGED. On an unclean PostgreSQL server crash it is truncated; this is acceptable because Runtime + Oban re-dispatches outstanding business work and any fresh terminal failure writes a new row.
+7. **Envelope-level reliability framing.** The Gateway's outbound contract is **at-least-once with `delivery.id` dedupe and terminal-failure capture (while ScopeWorker is alive)**. `exactly-once` is not a Gateway guarantee; it is a property the consuming subsystem builds on top of `delivery.id` correlation and outcome subscription.
 
 ## 10. Non-goals (egress)
 
 - **No Gateway-level multi-adapter fan-out.** Runtime issues `N` `deliver/1` calls.
 - **No outbound `Moderation` behaviour.** Outbound policy is the single hook `Security.sanitize_outbound`. (See §2.2.)
 - **No `failure_class` enum in the protocol.** `error.kind` plus `details.retry_after_ms` / `details.is_transient` is all the protocol carries; classification is local to ScopeWorker. (See §5.3.2.)
-- **No `:stream` mid-flight durability.** Only the close outcome is durable; mid-stream BEAM crash → `stream_lost` dead-letter. (See §5.1.1, §7.5.2, §7.6.4.)
+- **No in-flight outbound durability.** The ScopeWorker queue is in-memory. A BEAM crash loses in-flight deliveries silently; Runtime + Oban re-dispatches. (See §5.1.1, §7.5.)
 - **No exactly-once semantics** at the Gateway. (See §9.7.)
 - **No audit-grade rejection persistence on the outbound side.** `Security.sanitize_outbound` denials are reported via the synchronous return value and telemetry; they are not written to PostgreSQL by this RFC.
 - **No `Oban.insert/1` from the Gateway.** Gateway does not schedule business-level jobs. DLQ replay uses partitioned `BullXGateway.DLQ.ReplayWorker`s, not Oban.
-- **No `ActorResolver` / business identity bridging on egress.** Identity is set by Runtime when constructing the Delivery. `actor.app_user_id` is observed only on inbound (RFC 0002).
+- **No `ActorResolver` / business identity bridging on egress.** Identity is set by Runtime when constructing the Delivery. The inbound `actor` carries `{id, display, bot}` only.
 
 ## 11. Acceptance criteria
 
@@ -961,11 +851,11 @@ A coding agent has completed this RFC when **all** of the following hold. Number
 2. `BullX.Gateway.deliver/1` returns `{:error, {:unknown_channel, channel}}` for an unregistered `{adapter, tenant}` and **does not** publish `delivery.failed` and **does not** write any database row.
 3. `BullXGateway.Adapter.capabilities/0` is a required callback. If the resolved adapter does not declare the requested op-capability (`:send | :edit | :stream`), `deliver/1` publishes `delivery.failed{error.kind = "unsupported"}`, writes a `gateway_dead_letters` row, and returns `{:ok, delivery.id}`.
 4. Metadata-capabilities (`:cards | :reactions | :threads | …`) are **not** consulted by `deliver/1`. A Delivery with `op: :send, content: %{kind: :card, ...}` against an adapter declaring `[:send]` (no `:cards`) is cast to ScopeWorker; the adapter is expected to degrade via `fallback_text` and return `Outcome{status: :degraded}`.
-5. `Security.sanitize_outbound` returning a deny shape causes `deliver/1` to return `{:error, {:security_denied, :sanitize, reason_atom, description}}`. No `gateway_dispatches` row is written. No `delivery.*` outcome is published.
-6. `OutboundDeduper` caches **only terminal-success outcomes** (written by ScopeWorker after `put_attempt(completed) + delete_dispatch + publish delivery.succeeded`). Failed, in-flight, and `:retry_scheduled` Dispatches do not produce cache entries.
+5. `Security.sanitize_outbound` returning a deny shape causes `deliver/1` to return `{:error, {:security_denied, :sanitize, reason_atom, description}}`. No `delivery.*` outcome is published.
+6. `OutboundDeduper` caches **only terminal-success outcomes** (written by ScopeWorker after `publish delivery.succeeded`). Failed, in-flight, and retry-scheduled attempts do not produce cache entries.
 7. A `deliver/1` whose `delivery.id` hits `OutboundDeduper` re-publishes `delivery.succeeded` with `warnings: ["duplicate_delivery_id"]` (signal.id freshly generated per criterion 15), returns `{:ok, delivery.id}`, and **does not** invoke the adapter.
 8. `replay_dead_letter/1` does **not** consult `OutboundDeduper`, so a historical failure being replayed cannot be misclassified as a duplicate success.
-9. For `Delivery{op: :send | :edit}`: ScopeWorker invokes `adapter.deliver/2`. Adapter `{:ok, Outcome{status: :sent | :degraded}}` → `put_attempt(completed) + delete_dispatch + publish delivery.succeeded`. Adapter `{:error, error_map}` classified as retryable AND `attempts < max_attempts` → `:retry_scheduled` with backoff. Adapter `{:error, error_map}` classified as terminal OR `attempts` exhausted → `put_dead_letter + delete_dispatch + publish delivery.failed`.
+9. For `Delivery{op: :send | :edit}`: ScopeWorker invokes `adapter.deliver/2`. Adapter `{:ok, Outcome{status: :sent | :degraded}}` → `publish delivery.succeeded + OutboundDeduper.mark_success`. Adapter `{:error, error_map}` classified as retryable AND `attempts < max_attempts` → retry in memory with backoff. Adapter `{:error, error_map}` classified as terminal OR `attempts` exhausted → `put_dead_letter + publish delivery.failed`.
 10. Adapter success path is forbidden from returning `{:ok, Outcome{status: :failed}}`. Such a return is treated as a contract violation: ScopeWorker normalizes to `delivery.failed{error.kind = "contract"}` and writes `gateway_dead_letters`.
 11. Every `Delivery.Content.kind` value satisfies the §5.2 minimum body shape (kind ∈ enum, body is a map, every non-`:text` kind has a non-empty `body["fallback_text"]` string). `:card` carries `format`, `payload`, `fallback_text`. Media kinds carry a single `url` URI string plus `fallback_text`. Extra fields are allowed.
 12. `BullXGateway.Delivery` does **not** carry a `notify_pid` field. Outcome subscription is exclusively via `Bus.subscribe("com.agentbull.x.delivery.**")`. Outcome signals carry `extensions["bullx_caused_by"] = caused_by_signal_id` when the Delivery provided one.
@@ -983,23 +873,23 @@ A coding agent has completed this RFC when **all** of the following hold. Number
 ### 11.3 ScopeWorker + Stream
 
 16. Deliveries with the same `{channel, scope_id}` are serialized; deliveries across different scopes run in parallel.
-17. An adapter that raises (or `throw`s / `exit`s) inside `deliver/2` or `stream/3` does not crash ScopeWorker. ScopeWorker produces `Outcome{status: :failed, error: %{"kind" => "exception", ...}}` and follows the terminal path (`put_dead_letter + delete_dispatch + publish delivery.failed`).
-18. `:stream` op: ScopeWorker uses `Task.async_nolink` to consume the Enumerable. Successful close produces `put_attempt(completed) + delete_dispatch + publish delivery.succeeded`.
+17. An adapter that raises (or `throw`s / `exit`s) inside `deliver/2` or `stream/3` does not crash ScopeWorker. ScopeWorker produces `Outcome{status: :failed, error: %{"kind" => "exception", ...}}` and follows the terminal path (`put_dead_letter + publish delivery.failed`).
+18. `:stream` op: ScopeWorker uses `Task.async_nolink` to consume the Enumerable. Successful close produces `publish delivery.succeeded + OutboundDeduper.mark_success`.
 19. `BullX.Gateway.cancel_stream(delivery_id)` calls `Task.shutdown(task, :brutal_kill)`. If the adapter returns `{:error, %{"kind" => "stream_cancelled"}}` in time, ScopeWorker takes the terminal path with that error. If the Task exits with `:killed` / `:shutdown` first, ScopeWorker synthesizes `error.kind = "stream_cancelled"` and takes the terminal path.
 20. Adapter subtree DOWN observed via `Process.monitor` causes ScopeWorker to `Task.shutdown` any in-flight `:stream` and to take the terminal path with `error.kind = "adapter_restarted"`.
 21. ScopeWorker hibernates after 60s idle and terminates after 5 minutes idle. `ScopeRegistry` via-tuple lookup-or-start is used to atomically restart a worker on a new cast that arrives during termination.
 
-### 11.4 Durable + DLQ + Replay
+### 11.4 DLQ + Replay
 
-22. **Outbound transient retry.** With a mock adapter that fails the first two attempts with `error.kind = "network"` and succeeds on the third: `deliver/1` returns `{:ok, id}`; `delivery.succeeded` is observed within ~5s; `Store.list_attempts(id)` returns three rows.
-23. **Outbound exhaustion → DLQ.** With a mock adapter that always fails (`error.kind = "network"`) and `max_attempts = 3`: after the third failure, `gateway_dispatches` no longer contains the row, `gateway_dead_letters` contains exactly one row for it, `list_dead_letters/1` includes it, and `delivery.failed` was published.
-24. **Terminal short-circuit.** With a mock adapter returning `error.kind = "auth"` on attempt 1: a `gateway_dead_letters` row is written immediately, the `gateway_dispatches` row is deleted, and no further attempts run.
-25. **Outbound crash recovery.** After a `deliver/1` call, kill the BEAM. On restart, the UNLOGGED `gateway_dispatches` rows are gone (truncated by the absence of the previous server process — the precise crash mode is exercised by criterion 30); Runtime + Oban re-issues the work, producing a fresh `deliver/1` (with the same or a different `delivery.id` per Runtime's idempotency policy), which proceeds normally.
-26. **DLQ replay success.** Starting from the state of criterion 23, switch the mock adapter to success and call `BullX.Gateway.replay_dead_letter(id)`. A new `gateway_dispatches` row appears with `attempts = dead_letter.attempts_total` (i.e. `3`, used as the continuation starting point). The replay attempt completes successfully; `delivery.succeeded` is observed; the `gateway_dispatches` row is deleted; the `gateway_dead_letters` row is preserved with `replay_count = 1`. `list_attempts(id)` returns four rows total with `attempt` values `1, 2, 3, 4`.
+22. **Outbound transient retry.** With a mock adapter that fails the first two attempts with `error.kind = "network"` and succeeds on the third: `deliver/1` returns `{:ok, id}`; `delivery.succeeded` is observed within ~5s; the adapter callback was invoked exactly three times.
+23. **Outbound exhaustion → DLQ.** With a mock adapter that always fails (`error.kind = "network"`) and `max_attempts = 3`: after the third failure, `gateway_dead_letters` contains exactly one row for this `delivery.id` with `attempts_total = 3`, `list_dead_letters/1` includes it, and `delivery.failed` was published.
+24. **Terminal short-circuit.** With a mock adapter returning `error.kind = "auth"` on attempt 1: a `gateway_dead_letters` row is written immediately and no further attempts run.
+25. **Outbound crash — no recovery from DB.** After a `deliver/1` call for a delivery that never terminates, kill the BEAM mid-attempt. On restart, no outcome signal is emitted for that `delivery.id` and no `gateway_dead_letters` row exists for it. Runtime + Oban observes the missing terminal outcome and re-dispatches per its idempotency policy; the fresh attempt proceeds normally through the adapter.
+26. **DLQ replay success.** Starting from the state of criterion 23, switch the mock adapter to success and call `BullX.Gateway.replay_dead_letter(id)`. The `ReplayWorker` rebuilds the Delivery from the dead-letter row and casts the ScopeWorker; the replay attempt completes successfully; `delivery.succeeded` is observed; `OutboundDeduper.seen?(id)` now hits; the `gateway_dead_letters` row is preserved with `replay_count = 1`.
 27. **DLQ replay missing id.** `replay_dead_letter("does_not_exist")` returns `{:error, :not_found}`.
 28. **Per-adapter dedupe TTL** continues to apply on inbound (criterion in RFC 0002); the egress test exercises that `OutboundDeduper` TTL of 5 minutes does not retain entries past expiry — a successful Delivery with `delivery.id = X`, then 6 minutes later a second `deliver/1` with `delivery.id = X` invokes the adapter (no duplicate shortcut).
-29. **Retention.** Manually invoking `BullXGateway.Retention.run_once/0` applies §7.9 cleanup for `gateway_attempts` (>7d) and `gateway_dead_letters` (>90d AND `archived_at IS NULL`).
-30. **UNLOGGED crash semantics.** Simulate an unclean PostgreSQL **server** crash via `kill -9 <postmaster_pid>` / `docker kill -s KILL <pg_container>` / `pg_ctl stop -m immediate`. (`pg_terminate_backend` and `pg_cancel_backend` only kill an individual backend connection; they do **not** trigger a server-level crash and UNLOGGED tables are **not** truncated by them — the test must simulate a real server crash.) After the server restarts, all four UNLOGGED tables (`gateway_trigger_records` and `gateway_dedupe_seen` from RFC 0002, plus `gateway_dispatches` and `gateway_attempts` from this RFC) are empty; the LOGGED `gateway_dead_letters` retains all rows.
+29. **Retention.** Manually invoking `BullXGateway.Retention.run_once/0` applies §7.9 cleanup for `gateway_dead_letters` (>90d).
+30. **UNLOGGED crash semantics.** Simulate an unclean PostgreSQL **server** crash via `kill -9 <postmaster_pid>` / `docker kill -s KILL <pg_container>` / `pg_ctl stop -m immediate`. After the server restarts, both UNLOGGED tables (`gateway_dedupe_seen` from RFC 0002 and `gateway_dead_letters` from this RFC) are empty. The acceptable loss of dead-letter history is covered by Runtime + Oban re-dispatching outstanding work and any fresh terminal failures writing new rows.
 
 ### 11.5 Boundary isolation
 
@@ -1019,7 +909,7 @@ This RFC adds **no new package dependencies** beyond what RFC 0002 already requi
 
 Adapter-specific HTTP clients, WebSocket clients, or platform SDKs (e.g. `Req`, Feishu / Slack / Discord SDKs) are introduced by per-adapter RFCs, not by this RFC.
 
-This RFC adds three new database migrations (`gateway_dispatches` UNLOGGED, `gateway_attempts` UNLOGGED, `gateway_dead_letters` LOGGED). RFC 0002 owns the inbound migrations.
+This RFC adds one new database migration (`gateway_dead_letters` UNLOGGED). RFC 0002 owns the `gateway_dedupe_seen` migration. These are the only two Gateway tables.
 
 ## Appendix B: Consistency with `rfcs/plans/0000_Architecture.md`
 
@@ -1039,12 +929,12 @@ For the egress half of the Gateway, the alignment with the jido ecosystem (`jido
 | `jido_chat.Adapter.capabilities/0` | `BullXGateway.Adapter.capabilities/0` (RFC 0002 §6.2) — two-axis split (op vs. metadata); only op-capabilities gate `deliver/1` (§6.2). |
 | `jido_messaging.Security.sanitize_outbound` | `BullXGateway.Security.sanitize_outbound` (behaviour from RFC 0002; egress invocation specified in §6.3 step 4). |
 | `jido_messaging.DeliveryPolicy.backoff` | `BullXGateway.RetryPolicy` (§7.5.5) plus `Outcome.error.details["retry_after_ms"]` override (§5.3.2). |
-| `jido_messaging.DLQ + replay` | `BullXGateway.DLQ.ReplaySupervisor` + `gateway_dead_letters` (LOGGED) + `replay_dead_letter/1` (§7.8). |
-| `jido_integration.DispatchRuntime` (dispatch queue + retry + dead-letter) | `BullXGateway.Dispatcher` + `ScopeWorker` + `gateway_dispatches` + `gateway_attempts` + `gateway_dead_letters` (§7.5 / §7.8). |
-| `jido_integration.ControlPlane` (durable run/attempt storage) | `BullXGateway.ControlPlane` Store outbound subset (§7.3) — single Postgres implementation, dev/test under Ecto Sandbox. |
+| `jido_messaging.DLQ + replay` | `BullXGateway.DLQ.ReplaySupervisor` + `gateway_dead_letters` (UNLOGGED) + `replay_dead_letter/1` (§7.8). |
+| `jido_integration.DispatchRuntime` (dispatch queue + retry + dead-letter) | `BullXGateway.Dispatcher` + in-memory `ScopeWorker` + `gateway_dead_letters` (§7.5 / §7.8). |
+| `jido_integration.ControlPlane` (durable run/attempt storage) | `BullXGateway.ControlPlane` dead-letter callbacks (§7.3) — single Postgres implementation, dev/test under Ecto Sandbox. |
 
 Differences worth calling out:
 
 1. The Gateway's egress is a **plain at-least-once carrier** with `delivery.id` dedupe. It does not borrow `jido_messaging`'s exactly-once message semantics — those belong to Runtime.
 2. The two-axis `capabilities/0` (op vs. metadata) and the explicit "metadata-capabilities are not gating" rule (§6.2) are BullX-specific.
-3. The `:stream` durability boundary (mid-flight is not durable; `stream_lost` is the explicit dead-letter outcome) is BullX-specific and is what makes UNLOGGED `gateway_dispatches` safe for the streaming case.
+3. In-flight outbound state is intentionally **not persisted**. The ScopeWorker queue is in-memory; on a BEAM crash, in-flight deliveries are lost silently and Runtime + Oban re-dispatches. The only durable outbound artefact is a `gateway_dead_letters` row written on terminal failure while ScopeWorker is alive.

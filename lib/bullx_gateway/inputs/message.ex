@@ -8,7 +8,7 @@ defmodule BullXGateway.Inputs.Message do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel
   ]
   defstruct [
@@ -20,9 +20,8 @@ defmodule BullXGateway.Inputs.Message do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel,
-    :agent_text,
     :reply_to_external_id,
     mentions: nil,
     refs: [],
@@ -38,9 +37,8 @@ defmodule BullXGateway.Inputs.Message do
           scope_id: String.t(),
           thread_id: String.t() | nil,
           actor: BullXGateway.Inputs.actor(),
-          adapter_event: BullXGateway.Inputs.adapter_event(),
+          event: BullXGateway.Inputs.event(),
           reply_channel: BullXGateway.Inputs.reply_channel(),
-          agent_text: String.t() | nil,
           reply_to_external_id: String.t() | nil,
           mentions: [map()] | nil,
           refs: [BullXGateway.Inputs.ref()],

@@ -1,5 +1,13 @@
 defmodule BullXGateway.PolicyRunner do
-  @moduledoc false
+  @moduledoc """
+  Runs Gateway policy callbacks inside a bounded task boundary.
+
+  Security, gating, and moderation hooks are application-supplied code. Gateway
+  does not execute them inline in the caller process; it runs them under
+  `BullXGateway.PolicyTaskSupervisor`, enforces a timeout, and normalizes
+  crashes into explicit `{:error, ...}` results so pipeline stages can apply
+  fail-open or fail-closed policy deterministically.
+  """
 
   @task_supervisor BullXGateway.PolicyTaskSupervisor
 

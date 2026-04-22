@@ -1,9 +1,16 @@
 defmodule BullXGateway.SignalContext do
-  @moduledoc false
+  @moduledoc """
+  Policy-facing projection of a canonical inbound signal.
+
+  `BullXGateway.Gating` modules should read this struct instead of reaching
+  into raw `Jido.Signal` maps. It keeps the policy surface stable: channel,
+  scope, duplex, actor, content, refs, and the parsed semantic event type are
+  extracted once from the carrier signal and then reused by gating code.
+  """
 
   alias Jido.Signal
 
-  @type event_category ::
+  @type event_type ::
           :message
           | :message_edited
           | :message_recalled
@@ -14,63 +21,66 @@ defmodule BullXGateway.SignalContext do
 
   @type t :: %__MODULE__{
           signal_type: String.t(),
-          event_category: event_category(),
+          event_type: event_type(),
+          event_name: String.t(),
+          event_version: integer(),
+          event_data: map(),
           channel: {atom(), String.t()},
           scope_id: String.t(),
           thread_id: String.t() | nil,
           actor: map(),
           duplex: boolean(),
-          adapter_event_type: String.t(),
-          adapter_event_version: integer(),
-          agent_text: String.t() | nil,
+          content: [map()],
           refs: [map()],
           signal: Signal.t()
         }
 
   defstruct [
     :signal_type,
-    :event_category,
+    :event_type,
+    :event_name,
+    :event_version,
+    :event_data,
     :channel,
     :scope_id,
     :thread_id,
     :actor,
     :duplex,
-    :adapter_event_type,
-    :adapter_event_version,
-    :agent_text,
+    :content,
     :refs,
     :signal
   ]
 
   def from_signal(%Signal{} = signal) do
-    with {:ok, event_category} <- event_category(signal.data["event_category"]),
+    with {:ok, event_type} <- event_type(get_in(signal.data, ["event", "type"])),
          {:ok, channel} <- channel(signal.extensions) do
       {:ok,
        %__MODULE__{
          signal_type: signal.type,
-         event_category: event_category,
+         event_type: event_type,
+         event_name: get_in(signal.data, ["event", "name"]),
+         event_version: get_in(signal.data, ["event", "version"]),
+         event_data: get_in(signal.data, ["event", "data"]) || %{},
          channel: channel,
          scope_id: signal.data["scope_id"],
          thread_id: signal.data["thread_id"],
          actor: signal.data["actor"],
          duplex: signal.data["duplex"],
-         adapter_event_type: get_in(signal.data, ["adapter_event", "type"]),
-         adapter_event_version: get_in(signal.data, ["adapter_event", "version"]),
-         agent_text: signal.data["agent_text"],
+         content: signal.data["content"] || [],
          refs: signal.data["refs"] || [],
          signal: signal
        }}
     end
   end
 
-  defp event_category("message"), do: {:ok, :message}
-  defp event_category("message_edited"), do: {:ok, :message_edited}
-  defp event_category("message_recalled"), do: {:ok, :message_recalled}
-  defp event_category("reaction"), do: {:ok, :reaction}
-  defp event_category("action"), do: {:ok, :action}
-  defp event_category("slash_command"), do: {:ok, :slash_command}
-  defp event_category("trigger"), do: {:ok, :trigger}
-  defp event_category(other), do: {:error, {:invalid_event_category, other}}
+  defp event_type("message"), do: {:ok, :message}
+  defp event_type("message_edited"), do: {:ok, :message_edited}
+  defp event_type("message_recalled"), do: {:ok, :message_recalled}
+  defp event_type("reaction"), do: {:ok, :reaction}
+  defp event_type("action"), do: {:ok, :action}
+  defp event_type("slash_command"), do: {:ok, :slash_command}
+  defp event_type("trigger"), do: {:ok, :trigger}
+  defp event_type(other), do: {:error, {:invalid_event_type, other}}
 
   defp channel(%{"bullx_channel_adapter" => adapter, "bullx_channel_tenant" => tenant})
        when is_binary(tenant) do

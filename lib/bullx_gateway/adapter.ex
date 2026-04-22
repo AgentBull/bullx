@@ -1,5 +1,13 @@
 defmodule BullXGateway.Adapter do
-  @moduledoc false
+  @moduledoc """
+  Behaviour implemented by outbound channel adapters.
+
+  Gateway core owns delivery orchestration, retries, DLQ, and dedupe. Adapters
+  only translate a `BullXGateway.Delivery` into a transport-specific side
+  effect and may start transport-local children for a `{adapter, tenant}`
+  channel. `capabilities/0` is the contract Gateway uses to decide which
+  operations and metadata shapes a channel actually supports.
+  """
 
   @type context :: %{
           required(:channel) => BullXGateway.Delivery.channel(),

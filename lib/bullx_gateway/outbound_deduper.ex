@@ -3,9 +3,9 @@ defmodule BullXGateway.OutboundDeduper do
   ETS-backed cache of terminal-success outcomes, keyed by `delivery.id`.
 
   The cache is deliberately narrow: only `ScopeWorker` marks a success after a
-  terminal adapter acknowledgement (RFC 0003 §7.7.1). Failures, in-flight
+  terminal adapter acknowledgement (RFC 0003 §7.7). Failures, in-flight
   dispatches, and retries never write here, so DLQ replays can never be
-  misclassified as duplicates (§7.7.3).
+  misclassified as duplicates.
   """
 
   use GenServer
@@ -42,7 +42,6 @@ defmodule BullXGateway.OutboundDeduper do
         {:hit, outcome}
 
       [{^delivery_id, _outcome, _expires_at_ms}] ->
-        # Expired; tombstone sweep will reap it, but return miss now.
         :miss
 
       [] ->
@@ -51,9 +50,8 @@ defmodule BullXGateway.OutboundDeduper do
   end
 
   @doc """
-  Record a terminal success. Called only by `ScopeWorker` after
-  `put_attempt(completed) + delete_dispatch + publish delivery.succeeded` has
-  run (RFC 0003 §7.7.1).
+  Record a terminal success. Called only by `ScopeWorker` after a terminal
+  success has been published.
   """
   @spec mark_success(String.t(), Outcome.t()) :: :ok
   def mark_success(delivery_id, %Outcome{} = outcome) when is_binary(delivery_id) do

@@ -1,8 +1,12 @@
 defmodule FeishuOpenAPI.TokenStore do
-  @moduledoc false
-  # Dedicated owner of the `:feishu_openapi_tokens` ETS table. Kept separate from
-  # the per-app `TokenManager` so that transient manager restarts do not drop
-  # the shared token cache.
+  @moduledoc """
+  Owns the shared ETS token cache for the Feishu SDK.
+
+  The table lives outside the per-client token manager processes so transient
+  manager restarts do not wipe cached app or tenant tokens. The store
+  deliberately owns only the table lifecycle; refresh policy and token
+  acquisition stay in the manager modules.
+  """
 
   use GenServer
 

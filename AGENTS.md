@@ -247,6 +247,7 @@ Several Jido terms collide with more general meanings that dominate LLM training
 - Use the already included `:req` (`Req`) library for HTTP requests
 - Prefer deletion over addition. If the same behavior can be preserved by removing code, remove code.
 - Reuse existing utilities and patterns first. Search before creating a new helper, module, behaviour, process, schema, or dependency.
+- If a PostgreSQL table primary key is UUID, BullX code must generate the value with `BullX.Ext.gen_uuid_v7/0` before insert. In Ecto schemas, standardize this as `@primary_key {:id, BullX.Ecto.UUIDv7, autogenerate: true}` and do not rely on PostgreSQL-side UUID defaults such as `gen_random_uuid()`.
 - Do not add dependencies unless the user explicitly requests or approves them.
 - Do not introduce a new abstraction for a single use. Wait for repeated pressure or a clearly named domain boundary.
 - Do not optimize for the local patch at the cost of future change. Code is not static. It will move, split, merge, and be deleted.
@@ -307,6 +308,12 @@ When writing README, RFC, plan, prompt, policy, or operator-facing documentation
 ## Elixir
 
 Use `elixir-coding` skills (./.agents/skills/elixir-coding/SKILL.md) when working in Elixir files.
+
+When deciding between `@moduledoc` and `@moduledoc false`:
+- Add `@moduledoc` only when it contributes information that is not already obvious from the code.
+- Keep `@moduledoc false` when the module is self-explanatory and the doc would only restate names, fields, callbacks, or standard Elixir / OTP / Ecto behavior.
+- Add `@moduledoc` when the module carries BullX-specific conventions, assumptions, invariants, failure-boundary facts, durable-versus-ephemeral truth, protocol contracts, or business background that a competent Elixir engineer would not reliably infer from the implementation alone.
+- Prefer short English `@moduledoc` focused on the non-obvious boundary or contract. Do not turn module docs into line-by-line paraphrases of the code.
 
 ## Phoenix subsystem (lib/bullx_web only)
 

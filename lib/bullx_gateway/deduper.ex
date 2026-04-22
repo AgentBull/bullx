@@ -1,5 +1,12 @@
 defmodule BullXGateway.Deduper do
-  @moduledoc false
+  @moduledoc """
+  Durable-backed inbound dedupe with ETS as a hot cache.
+
+  The truth for seen inbound events lives in Gateway control-plane storage; the
+  ETS table owned by this process is only a restartable accelerator. Gateway
+  checks dedupe by `(source, external_id)` before the same signal is published
+  again, and successful publishes are recorded with an adapter-scoped TTL.
+  """
   use GenServer
 
   alias BullXGateway.ControlPlane

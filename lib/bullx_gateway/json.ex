@@ -1,5 +1,14 @@
 defmodule BullXGateway.Json do
-  @moduledoc false
+  @moduledoc """
+  Normalizes Gateway payloads into JSON-neutral terms.
+
+  Inbound signals, extensions, and policy metadata must end as string-keyed,
+  struct-free data that `Jido.Signal` can carry without encoding surprises.
+  This module is stricter than "Jason encodable": most structs are rejected,
+  time values are projected to ISO8601 strings, and
+  `BullXGateway.Delivery.Content` is the one struct shape Gateway intentionally
+  unwraps.
+  """
 
   alias BullXGateway.Delivery.Content
 

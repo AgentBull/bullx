@@ -1,11 +1,17 @@
 defmodule BullXGateway.Inputs do
-  @moduledoc false
+  @moduledoc """
+  Shared type vocabulary for canonical inbound adapter inputs.
+
+  Adapters submit one of the `BullXGateway.Inputs.*` structs before Gateway
+  renders the final `com.agentbull.x.inbound.received` signal. The types here
+  describe the stable pieces shared across all inbound categories: actor
+  identity, opaque event facts, reply routing, references, and content blocks.
+  """
 
   @type actor :: %{
           required(:id) => String.t(),
           required(:display) => String.t(),
-          required(:bot) => boolean(),
-          optional(:app_user_id) => String.t() | nil
+          required(:bot) => boolean()
         }
 
   @type ref :: %{
@@ -14,8 +20,8 @@ defmodule BullXGateway.Inputs do
           optional(:url) => String.t() | nil
         }
 
-  @type adapter_event :: %{
-          required(:type) => String.t(),
+  @type event :: %{
+          required(:name) => String.t(),
           required(:version) => non_neg_integer(),
           required(:data) => map()
         }

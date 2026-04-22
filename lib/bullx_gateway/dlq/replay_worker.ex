@@ -2,10 +2,10 @@ defmodule BullXGateway.DLQ.ReplayWorker do
   @moduledoc """
   Serializes DLQ replay operations for one partition.
 
-  `ReplaySupervisor` hashes `dispatch_id` into a partition index; each worker
-  processes one replay at a time, so a second `replay_dead_letter/1` call
-  against the same dispatch (either intentional or accidental) queues behind
-  the first.
+  Replay rebuilds a `BullXGateway.Delivery` from the dead-letter row and casts
+  the living `ScopeWorker` for the `{channel, scope_id}`. The dead-letter row
+  is preserved; `replay_count` is incremented on entry. The caller observes
+  progress via the `delivery.*` outcome signal on `BullXGateway.SignalBus`.
   """
 
   use GenServer
@@ -13,11 +13,11 @@ defmodule BullXGateway.DLQ.ReplayWorker do
   require Logger
 
   alias BullXGateway.ControlPlane
+  alias BullXGateway.Delivery
   alias BullXGateway.DLQ.ReplaySupervisor
-  alias BullXGateway.Dispatcher
   alias BullXGateway.ScopeWorker
 
-  @type replay_response :: %{status: :replayed, dispatch: map()}
+  @type replay_response :: %{status: :replayed, delivery: Delivery.t()}
 
   def start_link(opts) do
     partition = Keyword.fetch!(opts, :partition)
@@ -52,26 +52,19 @@ defmodule BullXGateway.DLQ.ReplayWorker do
 
   defp do_replay(dispatch_id) do
     with {:ok, dead_letter} <- fetch_dead_letter(dispatch_id),
-         {:ok, dispatch_row} <- enqueue_replay(dead_letter) do
-      channel = {
-        String.to_existing_atom(dead_letter.channel_adapter),
-        dead_letter.channel_tenant
-      }
+         :ok <- ControlPlane.increment_dead_letter_replay_count(dispatch_id) do
+      delivery = ScopeWorker.decode_delivery_from_dead_letter(dead_letter)
 
-      # Start (or look up) the ScopeWorker and enqueue the delivery id. This
-      # is deliberately a cast; the caller observes replay progress via the
-      # outcome signal on `BullXGateway.SignalBus` (see §7.8.1).
-      case Dispatcher.ensure_started(channel, dead_letter.scope_id) do
-        {:ok, _pid} ->
-          ScopeWorker.enqueue(channel, dead_letter.scope_id, dispatch_id)
-          {:ok, %{status: :replayed, dispatch: dispatch_row}}
+      case ScopeWorker.enqueue(delivery.channel, delivery.scope_id, delivery) do
+        :ok ->
+          {:ok, %{status: :replayed, delivery: delivery}}
 
         {:error, reason} ->
           Logger.error(
-            "BullXGateway.DLQ.ReplayWorker failed to start ScopeWorker for #{dispatch_id}: #{inspect(reason)}"
+            "BullXGateway.DLQ.ReplayWorker failed to enqueue replay for #{dispatch_id}: #{inspect(reason)}"
           )
 
-          {:error, {:scope_worker_start_failed, reason}}
+          {:error, {:scope_worker_enqueue_failed, reason}}
       end
     end
   end
@@ -81,44 +74,6 @@ defmodule BullXGateway.DLQ.ReplayWorker do
       {:ok, dead_letter} -> {:ok, dead_letter}
       :error -> {:error, :not_found}
     end
-  end
-
-  # Re-insert into gateway_dispatches with `attempts = attempts_total`
-  # (continuation, not reset) and increment `replay_count` on the dead-letter
-  # row. Both inside one transaction so either both happen or neither.
-  defp enqueue_replay(dead_letter) do
-    now = DateTime.utc_now()
-
-    dispatch_attrs = %{
-      id: dead_letter.dispatch_id,
-      op: dead_letter.op,
-      channel_adapter: dead_letter.channel_adapter,
-      channel_tenant: dead_letter.channel_tenant,
-      scope_id: dead_letter.scope_id,
-      thread_id: dead_letter.thread_id,
-      caused_by_signal_id: dead_letter.caused_by_signal_id,
-      payload: dead_letter.payload,
-      status: "queued",
-      attempts: dead_letter.attempts_total,
-      max_attempts: max(dead_letter.attempts_total + 1, default_max_attempts()),
-      available_at: now,
-      last_error: nil
-    }
-
-    case ControlPlane.transaction(fn store ->
-           with :ok <- store.put_dispatch(dispatch_attrs),
-                :ok <- store.increment_dead_letter_replay_count(dead_letter.dispatch_id) do
-             {:ok, dispatch_attrs}
-           end
-         end) do
-      {:ok, {:ok, attrs}} -> {:ok, attrs}
-      {:error, :duplicate} -> {:error, :already_replaying}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp default_max_attempts do
-    BullXGateway.RetryPolicy.default().max_attempts
   end
 
   defp via(partition) do

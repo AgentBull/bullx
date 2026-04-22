@@ -8,7 +8,7 @@ defmodule BullXGateway.Inputs.MessageEdited do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel
   ]
   defstruct [
@@ -20,10 +20,9 @@ defmodule BullXGateway.Inputs.MessageEdited do
     :scope_id,
     :thread_id,
     :actor,
-    :adapter_event,
+    :event,
     :reply_channel,
     :target_external_message_id,
-    :agent_text,
     :edited_at,
     refs: [],
     content: []
@@ -38,10 +37,9 @@ defmodule BullXGateway.Inputs.MessageEdited do
           scope_id: String.t(),
           thread_id: String.t() | nil,
           actor: BullXGateway.Inputs.actor(),
-          adapter_event: BullXGateway.Inputs.adapter_event(),
+          event: BullXGateway.Inputs.event(),
           reply_channel: BullXGateway.Inputs.reply_channel(),
           target_external_message_id: String.t() | nil,
-          agent_text: String.t() | nil,
           edited_at: DateTime.t() | nil,
           refs: [BullXGateway.Inputs.ref()],
           content: [BullXGateway.Inputs.content_block()]

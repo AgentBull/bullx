@@ -1,5 +1,14 @@
 defmodule BullXGateway.Signals.InboundReceived do
-  @moduledoc false
+  @moduledoc """
+  Builds and validates Gateway's canonical inbound carrier signal.
+
+  This module is the narrow contract between adapter-owned
+  `BullXGateway.Inputs.*` structs and the internal
+  `com.agentbull.x.inbound.received` signal. It owns the JSON-neutral
+  projection, default synthetic content for non-message events, CloudEvents
+  extension layout, and the type-specific validation BullX expects before
+  gating, moderation, and bus publish.
+  """
 
   alias BullXGateway.Inputs
   alias BullXGateway.Json
@@ -17,7 +26,7 @@ defmodule BullXGateway.Signals.InboundReceived do
   @type t :: Signal.t()
 
   @signal_type "com.agentbull.x.inbound.received"
-  @event_categories ~w(message message_edited message_recalled reaction action slash_command trigger)
+  @event_types ~w(message message_edited message_recalled reaction action slash_command trigger)
   @content_kinds ~w(text image audio video file card)
 
   @spec new(input()) :: {:ok, Signal.t()} | {:error, term()}
@@ -70,17 +79,15 @@ defmodule BullXGateway.Signals.InboundReceived do
 
   defp render_data(input) do
     with {:ok, actor} <- Json.normalize(input.actor),
-         {:ok, adapter_event} <- Json.normalize(input.adapter_event),
+         {:ok, event} <- normalize_event(input),
          {:ok, refs} <- Json.normalize(Map.get(input, :refs, []) || []),
          {:ok, content} <- render_content(input),
          {:ok, thread_id} <- Json.normalize(input.thread_id) do
       base =
         %{
-          "agent_text" => agent_text(input),
           "content" => content,
-          "event_category" => event_category(input),
+          "event" => event,
           "duplex" => duplex?(input),
-          "adapter_event" => adapter_event,
           "actor" => actor,
           "refs" => refs,
           "scope_id" => input.scope_id,
@@ -100,9 +107,19 @@ defmodule BullXGateway.Signals.InboundReceived do
 
   defp render_content(%Inputs.Message{content: content}), do: normalize_content(content)
   defp render_content(%Inputs.MessageEdited{content: content}), do: normalize_content(content)
-  defp render_content(%Inputs.SlashCommand{content: content}), do: normalize_content(content)
   defp render_content(%Inputs.Trigger{content: content}), do: normalize_content(content)
-  defp render_content(_input), do: {:ok, []}
+
+  defp render_content(%Inputs.MessageRecalled{content: content} = input),
+    do: normalize_content_or_default(content, [text_block(message_recalled_text(input))])
+
+  defp render_content(%Inputs.Reaction{content: content} = input),
+    do: normalize_content_or_default(content, [text_block(reaction_text(input))])
+
+  defp render_content(%Inputs.Action{content: content} = input),
+    do: normalize_content_or_default(content, [text_block(action_text(input))])
+
+  defp render_content(%Inputs.SlashCommand{content: content} = input),
+    do: normalize_content_or_default(content, [text_block(slash_command_text(input))])
 
   defp normalize_content(content) when is_list(content) do
     case Enum.reduce_while(content, {:ok, []}, fn block, {:ok, acc} ->
@@ -113,6 +130,34 @@ defmodule BullXGateway.Signals.InboundReceived do
            end
          end) do
       {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      other -> other
+    end
+  end
+
+  defp normalize_content(_content), do: {:error, :invalid_content}
+
+  defp normalize_content_or_default(content, default_content) when content in [nil, []] do
+    normalize_content(default_content)
+  end
+
+  defp normalize_content_or_default(content, _default_content), do: normalize_content(content)
+
+  defp normalize_event(input) do
+    with {:ok, event} <- Json.normalize(Map.get(input, :event)),
+         {:ok, event_name} <- fetch_required_string(event, "name"),
+         {:ok, event_version} <- fetch_required(event, "version"),
+         {:ok, event_data} <- fetch_required_map(event, "data"),
+         {:ok, normalized_event} <-
+           Json.normalize(%{
+             type: event_type(input),
+             name: event_name,
+             version: event_version,
+             data: event_data
+           }) do
+      {:ok, normalized_event}
+    else
+      {:error, :missing_required_key} -> {:error, :invalid_event}
+      {:error, :invalid_required_value} -> {:error, :invalid_event}
       other -> other
     end
   end
@@ -234,43 +279,48 @@ defmodule BullXGateway.Signals.InboundReceived do
 
   defp validate_data(data) do
     with true <- Json.string_key_map?(data) || {:error, :invalid_data},
-         :ok <- validate_event_category(data),
-         :ok <- validate_agent_text(data),
+         :ok <- validate_event(data),
          :ok <- validate_content(data),
-         :ok <- validate_adapter_event(data),
          :ok <- validate_scope_and_thread(data),
          :ok <- validate_actor(data["actor"]),
          :ok <- validate_refs(data["refs"]),
          :ok <- validate_reply_channel(data),
-         :ok <- validate_category_specific(data) do
+         :ok <- validate_type_specific(data) do
       :ok
     end
   end
 
-  defp validate_event_category(data) do
-    event_category = data["event_category"]
-    duplex = data["duplex"]
-
+  defp validate_event(%{
+         "event" => %{"type" => type, "name" => name, "version" => version, "data" => event_data},
+         "duplex" => duplex
+       }) do
     cond do
-      event_category not in @event_categories ->
-        {:error, {:invalid_event_category, event_category}}
+      type not in @event_types ->
+        {:error, {:invalid_event_type, type}}
 
       not is_boolean(duplex) ->
         {:error, :invalid_duplex}
 
-      duplex != expected_duplex(event_category) ->
+      duplex != expected_duplex(type) ->
         {:error, :inconsistent_duplex}
+
+      not is_binary(name) or name == "" ->
+        {:error, :invalid_event}
+
+      not is_integer(version) ->
+        {:error, :invalid_event}
+
+      not is_map(event_data) ->
+        {:error, :invalid_event}
 
       true ->
         :ok
     end
   end
 
-  defp validate_agent_text(data) do
-    if blank?(data["agent_text"]), do: {:error, :missing_agent_text}, else: :ok
-  end
+  defp validate_event(_), do: {:error, :invalid_event}
 
-  defp validate_content(%{"content" => content}) when is_list(content) do
+  defp validate_content(%{"content" => [_ | _] = content}) do
     Enum.reduce_while(content, :ok, fn block, _acc ->
       case validate_content_block(block) do
         :ok -> {:cont, :ok}
@@ -292,15 +342,6 @@ defmodule BullXGateway.Signals.InboundReceived do
 
   defp validate_content_block(_), do: {:error, :invalid_content_block}
 
-  defp validate_adapter_event(%{
-         "adapter_event" => %{"type" => type, "version" => version, "data" => data}
-       })
-       when is_binary(type) and type != "" and is_integer(version) and is_map(data) do
-    :ok
-  end
-
-  defp validate_adapter_event(_), do: {:error, :invalid_adapter_event}
-
   defp validate_scope_and_thread(data) do
     cond do
       blank?(data["scope_id"]) -> {:error, :missing_scope_id}
@@ -310,14 +351,12 @@ defmodule BullXGateway.Signals.InboundReceived do
     end
   end
 
-  defp validate_actor(%{"id" => id, "display" => display, "bot" => bot} = actor)
+  defp validate_actor(%{"id" => id, "display" => display, "bot" => bot})
        when is_binary(display) and is_boolean(bot) do
     cond do
       blank?(id) -> {:error, :missing_actor_id}
-      not Map.has_key?(actor, "app_user_id") -> :ok
-      actor["app_user_id"] == nil -> :ok
-      is_binary(actor["app_user_id"]) and actor["app_user_id"] != "" -> :ok
-      true -> {:error, :invalid_actor_app_user_id}
+      blank?(display) -> {:error, :missing_actor_display}
+      true -> :ok
     end
   end
 
@@ -368,32 +407,32 @@ defmodule BullXGateway.Signals.InboundReceived do
   defp validate_reply_channel(%{"duplex" => true}), do: {:error, :missing_reply_channel}
   defp validate_reply_channel(_), do: :ok
 
-  defp validate_category_specific(%{"event_category" => "message"}), do: :ok
+  defp validate_type_specific(%{"event" => %{"type" => "message"}}), do: :ok
 
-  defp validate_category_specific(%{
-         "event_category" => "message_edited",
+  defp validate_type_specific(%{
+         "event" => %{"type" => "message_edited"},
          "target_external_message_id" => target_external_message_id
        })
        when is_binary(target_external_message_id) and target_external_message_id != "" do
     :ok
   end
 
-  defp validate_category_specific(%{"event_category" => "message_edited"}),
+  defp validate_type_specific(%{"event" => %{"type" => "message_edited"}}),
     do: {:error, :missing_target_external_message_id}
 
-  defp validate_category_specific(%{
-         "event_category" => "message_recalled",
+  defp validate_type_specific(%{
+         "event" => %{"type" => "message_recalled"},
          "target_external_message_id" => target_external_message_id
        })
        when is_binary(target_external_message_id) and target_external_message_id != "" do
     :ok
   end
 
-  defp validate_category_specific(%{"event_category" => "message_recalled"}),
+  defp validate_type_specific(%{"event" => %{"type" => "message_recalled"}}),
     do: {:error, :missing_target_external_message_id}
 
-  defp validate_category_specific(%{
-         "event_category" => "reaction",
+  defp validate_type_specific(%{
+         "event" => %{"type" => "reaction"},
          "target_external_message_id" => target_external_message_id,
          "emoji" => emoji,
          "action" => action
@@ -403,11 +442,11 @@ defmodule BullXGateway.Signals.InboundReceived do
     :ok
   end
 
-  defp validate_category_specific(%{"event_category" => "reaction"}),
+  defp validate_type_specific(%{"event" => %{"type" => "reaction"}}),
     do: {:error, :invalid_reaction}
 
-  defp validate_category_specific(%{
-         "event_category" => "action",
+  defp validate_type_specific(%{
+         "event" => %{"type" => "action"},
          "target_external_message_id" => target_external_message_id,
          "action_id" => action_id,
          "values" => values
@@ -417,10 +456,10 @@ defmodule BullXGateway.Signals.InboundReceived do
     :ok
   end
 
-  defp validate_category_specific(%{"event_category" => "action"}), do: {:error, :invalid_action}
+  defp validate_type_specific(%{"event" => %{"type" => "action"}}), do: {:error, :invalid_action}
 
-  defp validate_category_specific(%{
-         "event_category" => "slash_command",
+  defp validate_type_specific(%{
+         "event" => %{"type" => "slash_command"},
          "command_name" => command_name,
          "args" => args
        })
@@ -428,10 +467,10 @@ defmodule BullXGateway.Signals.InboundReceived do
     :ok
   end
 
-  defp validate_category_specific(%{"event_category" => "slash_command"}),
+  defp validate_type_specific(%{"event" => %{"type" => "slash_command"}}),
     do: {:error, :invalid_slash_command}
 
-  defp validate_category_specific(%{"event_category" => "trigger"}), do: :ok
+  defp validate_type_specific(%{"event" => %{"type" => "trigger"}}), do: :ok
 
   defp channel({adapter, tenant}) when is_atom(adapter) and is_binary(tenant),
     do: {:ok, {Atom.to_string(adapter), tenant}}
@@ -450,41 +489,42 @@ defmodule BullXGateway.Signals.InboundReceived do
   defp render_time(%DateTime{} = time), do: DateTime.to_iso8601(time)
   defp render_time(time) when is_binary(time), do: time
 
-  defp agent_text(%Inputs.Message{agent_text: agent_text}), do: agent_text
-  defp agent_text(%Inputs.MessageEdited{agent_text: agent_text}), do: agent_text
+  defp message_recalled_text(input) do
+    recaller = input.recalled_by_actor || input.actor
+    "#{actor_display(recaller)} recalled a message"
+  end
 
-  defp agent_text(%Inputs.MessageRecalled{agent_text: nil} = input),
-    do: "#{actor_display(input.actor)} recalled a message"
-
-  defp agent_text(%Inputs.MessageRecalled{agent_text: agent_text}), do: agent_text
-
-  defp agent_text(%Inputs.Reaction{agent_text: nil, action: action, emoji: emoji} = input) do
+  defp reaction_text(%Inputs.Reaction{action: action, emoji: emoji} = input) do
     case to_string(action) do
       "removed" -> "#{actor_display(input.actor)} removed reaction #{emoji}"
       _ -> "#{actor_display(input.actor)} reacted with #{emoji}"
     end
   end
 
-  defp agent_text(%Inputs.Reaction{agent_text: agent_text}), do: agent_text
-  defp agent_text(%Inputs.Trigger{agent_text: agent_text}), do: agent_text
-  defp agent_text(%Inputs.Action{action_id: action_id}), do: "Action submitted: #{action_id}"
+  defp action_text(%Inputs.Action{action_id: action_id} = input),
+    do: "#{actor_display(input.actor)} submitted action: #{action_id}"
 
-  defp agent_text(%Inputs.SlashCommand{command_name: command_name, args: args}),
-    do: "/#{command_name} #{args}" |> String.trim()
+  defp slash_command_text(%Inputs.SlashCommand{command_name: command_name, args: args}) do
+    ["/", command_name || "", " ", args || ""]
+    |> IO.iodata_to_binary()
+    |> String.trim()
+  end
 
-  defp event_category(%Inputs.Message{}), do: "message"
-  defp event_category(%Inputs.MessageEdited{}), do: "message_edited"
-  defp event_category(%Inputs.MessageRecalled{}), do: "message_recalled"
-  defp event_category(%Inputs.Reaction{}), do: "reaction"
-  defp event_category(%Inputs.Action{}), do: "action"
-  defp event_category(%Inputs.SlashCommand{}), do: "slash_command"
-  defp event_category(%Inputs.Trigger{}), do: "trigger"
+  defp event_type(%Inputs.Message{}), do: "message"
+  defp event_type(%Inputs.MessageEdited{}), do: "message_edited"
+  defp event_type(%Inputs.MessageRecalled{}), do: "message_recalled"
+  defp event_type(%Inputs.Reaction{}), do: "reaction"
+  defp event_type(%Inputs.Action{}), do: "action"
+  defp event_type(%Inputs.SlashCommand{}), do: "slash_command"
+  defp event_type(%Inputs.Trigger{}), do: "trigger"
 
   defp duplex?(%Inputs.Trigger{}), do: false
   defp duplex?(_), do: true
 
   defp expected_duplex("trigger"), do: false
   defp expected_duplex(_), do: true
+
+  defp text_block(text), do: %{"kind" => "text", "body" => %{"text" => text}}
 
   defp actor_display(%{display: display}) when is_binary(display) and display != "", do: display
 
@@ -496,6 +536,27 @@ defmodule BullXGateway.Signals.InboundReceived do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp fetch_required(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, :missing_required_key}
+    end
+  end
+
+  defp fetch_required_string(map, key) when is_map(map) do
+    with {:ok, value} <- fetch_required(map, key),
+         true <- (is_binary(value) and value != "") || {:error, :invalid_required_value} do
+      {:ok, value}
+    end
+  end
+
+  defp fetch_required_map(map, key) when is_map(map) do
+    with {:ok, value} <- fetch_required(map, key),
+         true <- is_map(value) || {:error, :invalid_required_value} do
+      {:ok, value}
+    end
+  end
 
   defp blank?(value), do: value in [nil, ""]
   defp present?(value), do: not blank?(value)

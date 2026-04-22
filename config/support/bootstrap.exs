@@ -1,5 +1,13 @@
 defmodule BullX.Config.Bootstrap do
-  @moduledoc false
+  @moduledoc """
+  Shared bootstrap helpers for BullX config scripts.
+
+  This module exists for the pre-Repo bootstrap phase, where BullX still needs
+  typed environment parsing but cannot rely on the runtime config cache. It
+  owns the project-wide dotenv convention used by `config/*.exs`: load `.env`
+  plus `.env.<profile>`, include `.env.local` in `:dev`, and never override a
+  value already present in the OS environment.
+  """
 
   @doc """
   Loads the appropriate `.env*` files for the given Mix environment and merges

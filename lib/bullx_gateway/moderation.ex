@@ -1,8 +1,15 @@
 defmodule BullXGateway.Moderation do
-  @moduledoc false
+  @moduledoc """
+  Executes the moderation stage of the inbound policy pipeline.
+
+  Moderators run after gating on the canonical inbound signal and may allow,
+  reject, emit flags, or return a modified signal. Any modification is
+  revalidated through `BullXGateway.Signals.InboundReceived.validate_signal/1`;
+  moderation may change content or extensions, but it may not break the inbound
+  carrier contract.
+  """
 
   alias BullXGateway.PolicyRunner
-  alias BullXGateway.Telemetry
   alias Jido.Signal
 
   @type reason :: atom()
@@ -51,21 +58,17 @@ defmodule BullXGateway.Moderation do
 
     case PolicyRunner.run(fn -> moderator.moderate(signal, opts) end, timeout_ms) do
       {:ok, :allow} ->
-        emit_decision(moderator, :allow, nil)
         :allow
 
       {:ok, {:reject, reason, description}} ->
-        emit_decision(moderator, :reject, reason)
         {:reject, reason, description}
 
       {:ok, {:flag, reason, description}} ->
-        emit_decision(moderator, :flag, reason)
         {:flag, flag("moderation", moderator, Atom.to_string(reason), description)}
 
       {:ok, {:modify, %Signal{} = modified_signal}} ->
         case validate.(modified_signal) do
           {:ok, valid_signal} ->
-            emit_decision(moderator, :modify, nil)
             {:modify, valid_signal}
 
           {:error, reason} ->
@@ -84,18 +87,14 @@ defmodule BullXGateway.Moderation do
   end
 
   defp handle_timeout_fallback(moderator, :allow_with_flag) do
-    emit_decision(moderator, :allow_with_flag, :timeout_fallback)
     {:flag, flag("moderation", moderator, "timeout_fallback", "#{inspect(moderator)} timed out")}
   end
 
   defp handle_timeout_fallback(moderator, _fallback) do
-    emit_decision(moderator, :reject, :timeout_fallback)
     {:reject, :timeout_fallback, "#{inspect(moderator)} timed out"}
   end
 
   defp handle_error_fallback(moderator, reason, :allow_with_flag) do
-    emit_decision(moderator, :allow_with_flag, :error_fallback)
-
     {:flag,
      flag(
        "moderation",
@@ -106,16 +105,7 @@ defmodule BullXGateway.Moderation do
   end
 
   defp handle_error_fallback(moderator, reason, _fallback) do
-    emit_decision(moderator, :reject, :error_fallback)
     {:reject, :error_fallback, "#{inspect(moderator)} errored: #{inspect(reason)}"}
-  end
-
-  defp emit_decision(module, decision, reason) do
-    Telemetry.emit([:bullx, :gateway, :moderation, :decision], %{count: 1}, %{
-      module: module,
-      decision: decision,
-      reason: reason
-    })
   end
 
   defp flag(stage, module, reason, description) do

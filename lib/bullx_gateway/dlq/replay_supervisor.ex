@@ -1,10 +1,9 @@
 defmodule BullXGateway.DLQ.ReplaySupervisor do
   @moduledoc """
   Bounds DLQ replay concurrency by partitioning replay requests across N
-  `ReplayWorker` GenServers (RFC 0003 §7.8.1). Requests for a given
-  `dispatch_id` always route to the same worker via
-  `:erlang.phash2({:replay, dispatch_id}, N)`, so the same dispatch cannot be
-  replayed twice in parallel.
+  `ReplayWorker` GenServers. Requests for a given `dispatch_id` always route
+  to the same worker via `:erlang.phash2({:replay, dispatch_id}, N)`, so the
+  same dispatch cannot be replayed twice in parallel.
   """
 
   use Supervisor

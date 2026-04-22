@@ -21,31 +21,33 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
       actor: %{
         id: "system:market-feed",
         display: "Market Feed",
-        bot: true,
-        app_user_id: nil
+        bot: true
       },
-      agent_text: "A GitHub issue was opened",
-      adapter_event: %{
-        type: "github.issue.opened",
+      content: [%Content{kind: :text, body: %{"text" => "A GitHub issue was opened"}}],
+      event: %{
+        name: "github.issue.opened",
         version: 1,
         data: %{issue_number: 101}
       },
-      refs: [],
-      content: []
+      refs: []
     }
 
     assert {:ok, signal} = InboundReceived.new(input)
     assert signal.type == "com.agentbull.x.inbound.received"
-    assert signal.data["event_category"] == "trigger"
+    assert get_in(signal.data, ["event", "type"]) == "trigger"
     assert signal.data["duplex"] == false
 
-    assert signal.data["adapter_event"] == %{
-             "type" => "github.issue.opened",
+    assert signal.data["event"] == %{
+             "type" => "trigger",
+             "name" => "github.issue.opened",
              "version" => 1,
              "data" => %{"issue_number" => 101}
            }
 
-    assert signal.data["content"] == []
+    assert signal.data["content"] == [
+             %{"kind" => "text", "body" => %{"text" => "A GitHub issue was opened"}}
+           ]
+
     assert signal.data["reply_channel"] == nil
     assert signal.extensions["bullx_channel_adapter"] == "github"
     assert signal.extensions["bullx_channel_tenant"] == "default"
@@ -61,8 +63,7 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
       actor: %{
         id: "feishu:ou_123",
         display: "Alice",
-        bot: false,
-        app_user_id: nil
+        bot: false
       },
       reply_channel: %{
         adapter: :feishu,
@@ -70,9 +71,8 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
         scope_id: "chat_123",
         thread_id: nil
       },
-      agent_text: "sent an image",
-      adapter_event: %{
-        type: "feishu.message.image",
+      event: %{
+        name: "feishu.message.image",
         version: 1,
         data: %{}
       },
@@ -88,12 +88,15 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
     assert {:error, :missing_fallback_text} = InboundReceived.new(input)
   end
 
-  describe "seven canonical categories" do
+  describe "seven canonical event types" do
     test "Message renders duplex=true with reply_channel" do
       {:ok, signal} = InboundReceived.new(message_input())
-      assert signal.data["event_category"] == "message"
+      assert get_in(signal.data, ["event", "type"]) == "message"
       assert signal.data["duplex"] == true
-      assert signal.data["agent_text"] == "hello"
+
+      assert signal.data["content"] == [
+               %{"kind" => "text", "body" => %{"text" => "hello"}}
+             ]
 
       assert signal.data["reply_channel"] == %{
                "adapter" => "feishu",
@@ -107,44 +110,52 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
       input =
         build_input(MessageEdited, %{
           target_external_message_id: "om_edit",
-          agent_text: "updated text",
           edited_at: ~U[2026-04-21 10:02:00Z],
-          adapter_event: %{type: "feishu.message.edited", version: 1, data: %{}}
+          content: [%Content{kind: :text, body: %{"text" => "updated text"}}],
+          event: %{name: "feishu.message.edited", version: 1, data: %{}}
         })
 
       {:ok, signal} = InboundReceived.new(input)
-      assert signal.data["event_category"] == "message_edited"
+      assert get_in(signal.data, ["event", "type"]) == "message_edited"
       assert signal.data["duplex"] == true
       assert signal.data["target_external_message_id"] == "om_edit"
       assert signal.data["edited_at"] == "2026-04-21T10:02:00Z"
     end
 
-    test "MessageRecalled default-renders agent_text from actor display" do
+    test "MessageRecalled default-renders content from actor display" do
       input =
         build_input(MessageRecalled, %{
           target_external_message_id: "om_recall",
           recalled_at: ~U[2026-04-21 10:05:00Z],
-          adapter_event: %{type: "feishu.message.recalled", version: 1, data: %{}}
+          event: %{name: "feishu.message.recalled", version: 1, data: %{}}
         })
 
       {:ok, signal} = InboundReceived.new(input)
-      assert signal.data["event_category"] == "message_recalled"
-      assert signal.data["agent_text"] == "Boris recalled a message"
+      assert get_in(signal.data, ["event", "type"]) == "message_recalled"
+
+      assert signal.data["content"] == [
+               %{"kind" => "text", "body" => %{"text" => "Boris recalled a message"}}
+             ]
+
       assert signal.data["target_external_message_id"] == "om_recall"
     end
 
-    test "Reaction default-renders agent_text when adapter omits it" do
+    test "Reaction default-renders content when adapter omits it" do
       input =
         build_input(Reaction, %{
           target_external_message_id: "om_target",
           emoji: "THUMBSUP",
           action: :added,
-          adapter_event: %{type: "feishu.reaction.created", version: 1, data: %{}}
+          event: %{name: "feishu.reaction.created", version: 1, data: %{}}
         })
 
       {:ok, signal} = InboundReceived.new(input)
-      assert signal.data["event_category"] == "reaction"
-      assert signal.data["agent_text"] == "Boris reacted with THUMBSUP"
+      assert get_in(signal.data, ["event", "type"]) == "reaction"
+
+      assert signal.data["content"] == [
+               %{"kind" => "text", "body" => %{"text" => "Boris reacted with THUMBSUP"}}
+             ]
+
       assert signal.data["action"] == "added"
       assert signal.data["emoji"] == "THUMBSUP"
     end
@@ -155,48 +166,113 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
           target_external_message_id: "om_card",
           action_id: "approve",
           values: %{"choice" => "approve"},
-          adapter_event: %{type: "feishu.card.action_clicked", version: 1, data: %{}}
+          event: %{name: "feishu.card.action_clicked", version: 1, data: %{}}
         })
 
       {:ok, signal} = InboundReceived.new(input)
-      assert signal.data["event_category"] == "action"
+      assert get_in(signal.data, ["event", "type"]) == "action"
       assert signal.data["duplex"] == true
       assert signal.data["action_id"] == "approve"
       assert signal.data["values"] == %{"choice" => "approve"}
+
+      assert signal.data["content"] == [
+               %{"kind" => "text", "body" => %{"text" => "Boris submitted action: approve"}}
+             ]
     end
 
-    test "SlashCommand synthesizes agent_text from command_name and args" do
+    test "MessageRecalled default content uses recalled_by_actor when present" do
+      input =
+        build_input(MessageRecalled, %{
+          target_external_message_id: "om_recall",
+          recalled_at: ~U[2026-04-21 10:05:00Z],
+          recalled_by_actor: %{
+            id: "feishu:ou_admin",
+            display: "Admin",
+            bot: false
+          },
+          event: %{name: "feishu.message.recalled", version: 1, data: %{}}
+        })
+
+      {:ok, signal} = InboundReceived.new(input)
+
+      assert signal.data["content"] == [
+               %{"kind" => "text", "body" => %{"text" => "Admin recalled a message"}}
+             ]
+    end
+
+    test "SlashCommand synthesizes content from command_name and args" do
       input =
         build_input(SlashCommand, %{
           command_name: "status",
           args: "detail",
-          adapter_event: %{type: "feishu.command.issued", version: 1, data: %{}}
+          event: %{name: "feishu.command.issued", version: 1, data: %{}}
         })
 
       {:ok, signal} = InboundReceived.new(input)
-      assert signal.data["event_category"] == "slash_command"
-      assert signal.data["agent_text"] == "/status detail"
+      assert get_in(signal.data, ["event", "type"]) == "slash_command"
+
+      assert signal.data["content"] == [
+               %{"kind" => "text", "body" => %{"text" => "/status detail"}}
+             ]
+
       assert signal.data["command_name"] == "status"
     end
   end
 
-  describe "adapter_event validation" do
-    test "rejects empty adapter_event.type" do
-      input = %{message_input() | adapter_event: %{type: "", version: 1, data: %{}}}
-      assert {:error, :invalid_adapter_event} = InboundReceived.new(input)
+  describe "event validation" do
+    test "rejects empty event.name" do
+      input = %{message_input() | event: %{name: "", version: 1, data: %{}}}
+      assert {:error, :invalid_event} = InboundReceived.new(input)
     end
 
-    test "rejects non-integer adapter_event.version" do
-      input = %{message_input() | adapter_event: %{type: "x.y", version: "1", data: %{}}}
-      assert {:error, :invalid_adapter_event} = InboundReceived.new(input)
+    test "rejects non-integer event.version" do
+      input = %{message_input() | event: %{name: "x.y", version: "1", data: %{}}}
+      assert {:error, :invalid_event} = InboundReceived.new(input)
+    end
+  end
+
+  describe "content invariant" do
+    test "rejects Message with empty content" do
+      input = %{message_input() | content: []}
+      assert {:error, :invalid_content} = InboundReceived.new(input)
+    end
+
+    test "rejects Trigger without content (no default synthesis)" do
+      input = %Trigger{
+        id: "evt-trigger-empty",
+        source: "bullx://gateway/github/default",
+        channel: {:github, "default"},
+        scope_id: "bullx/example",
+        thread_id: nil,
+        actor: %{
+          id: "system:market-feed",
+          display: "Market Feed",
+          bot: true
+        },
+        event: %{name: "github.issue.opened", version: 1, data: %{}},
+        content: [],
+        refs: []
+      }
+
+      assert {:error, :invalid_content} = InboundReceived.new(input)
+    end
+  end
+
+  describe "actor invariant" do
+    test "rejects actor with empty display" do
+      input = %{
+        message_input()
+        | actor: %{id: "feishu:ou_boris", display: "", bot: false}
+      }
+
+      assert {:error, :missing_actor_display} = InboundReceived.new(input)
     end
   end
 
   defp message_input do
     build_input(Message, %{
-      agent_text: "hello",
       content: [%Content{kind: :text, body: %{"text" => "hello"}}],
-      adapter_event: %{type: "feishu.message.posted", version: 1, data: %{}}
+      event: %{name: "feishu.message.posted", version: 1, data: %{}}
     })
   end
 
@@ -214,8 +290,7 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
       actor: %{
         id: "feishu:ou_boris",
         display: "Boris",
-        bot: false,
-        app_user_id: nil
+        bot: false
       },
       reply_channel: %{
         adapter: :feishu,
@@ -223,8 +298,9 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
         scope_id: "oc_xxx",
         thread_id: nil
       },
-      adapter_event: %{type: "feishu.placeholder", version: 1, data: %{}},
-      refs: []
+      event: %{name: "feishu.placeholder", version: 1, data: %{}},
+      refs: [],
+      content: []
     }
   end
 end

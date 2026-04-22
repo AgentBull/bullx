@@ -2,11 +2,9 @@ defmodule BullXGateway.Dispatcher do
   @moduledoc """
   DynamicSupervisor for `ScopeWorker` processes, keyed by `{channel, scope_id}`.
 
-  Workers are started lazily on the first `deliver/1` for a scope, plus a
-  one-shot boot scan that starts workers for any dispatches left in
-  `:queued` / `:retry_scheduled` by a previous BEAM run (RFC 0003 §7.5.2).
-  Idle workers terminate after five minutes; a cast that arrives mid-terminate
-  is routed to a fresh worker through the via-tuple pattern.
+  Workers are started lazily on the first `deliver/1` for a scope. All state is
+  in memory; on a BEAM crash the queues are lost and Runtime+Oban re-dispatches
+  any outstanding work.
   """
 
   use DynamicSupervisor
@@ -51,7 +49,6 @@ defmodule BullXGateway.Dispatcher do
         {:ok, pid}
 
       {:error, _} = error ->
-        # A concurrent start may have registered in the meantime.
         case ScopeRegistry.whereis(channel, scope_id) do
           pid when is_pid(pid) -> {:ok, pid}
           nil -> error
