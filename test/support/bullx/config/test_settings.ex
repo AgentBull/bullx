@@ -2,20 +2,20 @@ defmodule BullX.Config.TestSettings do
   use BullX.Config
 
   @envdoc false
-  bullx_env(:test_integer, :test_integer,
+  bullx_env(:test_integer,
     type: :integer,
     default: 10,
     zoi: Zoi.integer(gte: 1, lte: 20)
   )
 
   @envdoc false
-  bullx_env(:test_boolean, :test_boolean,
+  bullx_env(:test_boolean,
     type: :boolean,
     default: false
   )
 
   @envdoc false
-  bullx_env(:test_mode, :test_mode,
+  bullx_env(:test_mode,
     type: :binary,
     default: "safe",
     zoi: Zoi.enum(["safe", "fast", "strict"])

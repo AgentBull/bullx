@@ -1,8 +1,8 @@
-defmodule BullX.Gateway.Supervisor do
+defmodule BullXGateway.AdapterSupervisor do
   @moduledoc false
   use Supervisor
 
-  def start_link(opts) do
+  def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     Supervisor.start_link(__MODULE__, :ok, name: name)
   end

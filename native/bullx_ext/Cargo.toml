@@ -22,11 +22,3 @@ rand_chacha = "0.10.0"
 [dependencies.uuid]
 version = "1.23.1"
 features = ["v4","v7","fast-rng"]
-
-
-[profile.release]
-lto = true
-codegen-units = 1
-
-[profile.dev]
-incremental = true

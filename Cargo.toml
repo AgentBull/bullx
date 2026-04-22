@@ -2,3 +2,10 @@
 resolver = "2"
 
 members = ["native/bullx_ext"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.dev]
+incremental = true

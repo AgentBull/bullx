@@ -10,14 +10,18 @@ const GENERATE_KEY_CONTEXT: &str = "[extra=generateKey()]";
 /// Suitable for most use cases other than hashing passwords.
 /// The optional salt must be a 32-byte hex string.
 #[rustler::nif(schedule = "DirtyCpu")]
-pub fn generic_hash(data: Term<'_>, salt: Option<String>) -> NifResult<String> {
-  let input = decode_input(data)?;
+pub fn generic_hash(data: Term<'_>, salt: Term<'_>) -> NifResult<String> {
+  let input = decode_binary(data, "data")?;
+  let salt = decode_optional_string(salt, "salt")?;
+
   blake3_hash_hex(input.as_slice(), salt)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-pub fn bs58_hash(data: Term<'_>, salt: Option<String>) -> NifResult<String> {
-  let input = decode_input(data)?;
+pub fn bs58_hash(data: Term<'_>, salt: Term<'_>) -> NifResult<String> {
+  let input = decode_binary(data, "data")?;
+  let salt = decode_optional_string(salt, "salt")?;
+
   blake3_hash_bs58(input.as_slice(), salt)
 }
 
@@ -26,11 +30,13 @@ pub fn bs58_hash(data: Term<'_>, salt: Option<String>) -> NifResult<String> {
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn derive_key(
   key_seed: Term<'_>,
-  sub_key_id: String,
-  extra_context: Option<String>,
+  sub_key_id: Term<'_>,
+  extra_context: Term<'_>,
 ) -> NifResult<String> {
+  let seed = decode_binary(key_seed, "key_seed")?;
+  let sub_key_id = decode_string(sub_key_id, "sub_key_id")?;
+  let extra_context = decode_optional_string(extra_context, "extra_context")?;
   let ctx = gen_context(&sub_key_id, extra_context);
-  let seed = decode_input(key_seed)?;
 
   Ok(blake3::derive_key(&ctx, seed.as_slice()).encode_hex::<String>())
 }
@@ -58,8 +64,24 @@ pub fn generate_key() -> NifResult<String> {
   Ok(blake3::derive_key(GENERATE_KEY_CONTEXT, &seed).encode_hex::<String>())
 }
 
-fn decode_input<'a>(term: Term<'a>) -> NifResult<Binary<'a>> {
-  term.decode_as_binary()
+fn decode_binary<'a>(term: Term<'a>, field: &str) -> NifResult<Binary<'a>> {
+  if !term.is_binary() {
+    return Err(Error::Term(Box::new(format!("{field} must be a binary"))));
+  }
+
+  Binary::from_term(term).map_err(|_| Error::Term(Box::new(format!("{field} must be a binary"))))
+}
+
+fn decode_string(term: Term<'_>, field: &str) -> NifResult<String> {
+  term
+    .decode()
+    .map_err(|_| Error::Term(Box::new(format!("{field} must be a string"))))
+}
+
+fn decode_optional_string(term: Term<'_>, field: &str) -> NifResult<Option<String>> {
+  term
+    .decode()
+    .map_err(|_| Error::Term(Box::new(format!("{field} must be a string or nil"))))
 }
 
 fn blake3_hash_hex(input: &[u8], salt: Option<String>) -> NifResult<String> {

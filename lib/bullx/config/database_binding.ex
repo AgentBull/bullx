@@ -7,15 +7,9 @@ defmodule BullX.Config.DatabaseBinding do
 
     case BullX.Config.Cache.get_raw(key) do
       {:ok, raw} ->
-        case Skogsra.Type.cast(env, raw) do
-          {:ok, casted} ->
-            case BullX.Config.Validation.validate_runtime(env, casted) do
-              {:ok, _} -> {:ok, casted}
-              {:error, _} -> nil
-            end
-
-          :error ->
-            nil
+        case BullX.Config.Validation.validate_runtime_raw(env, raw) do
+          :ok -> {:ok, raw}
+          {:error, _} -> nil
         end
 
       :error ->

@@ -1,4 +1,4 @@
-defmodule BullX.AIAgent do
+defmodule BullXAIAgent do
   @moduledoc """
   The AI Agent behavior layer. Prompt types, reasoning strategies (FSM / DAG /
   behavior tree), and decision logic. Forked from jido_ai v2.1.0 and

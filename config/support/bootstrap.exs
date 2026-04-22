@@ -12,39 +12,47 @@ defmodule BullX.Config.Bootstrap do
     profile = profile_name(env)
     files = dotenv_files(root, profile, env)
 
-    Enum.each(files, &load_env_file/1)
+    files
+    |> Enum.reduce(%{}, fn path, acc ->
+      Map.merge(acc, read_env_file(path))
+    end)
+    |> put_missing_envs()
   end
 
-  # Parses a KEY=value file and sets missing env vars.
+  # Reads a KEY=value file into a map.
   # Falls back to Dotenvy when available (supports quoted values, comments, etc.);
   # uses a minimal built-in parser otherwise (covers the plain KEY=value case).
-  defp load_env_file(path) do
+  defp read_env_file(path) do
     case apply(Dotenvy, :source!, [[path], [require_files: false]]) do
-      loaded when is_map(loaded) ->
-        Enum.each(loaded, fn {k, v} ->
-          if is_nil(System.get_env(k)), do: System.put_env(k, v)
-        end)
+      loaded when is_map(loaded) -> loaded
     end
   rescue
     UndefinedFunctionError ->
       case File.read(path) do
-        {:ok, content} -> parse_and_set_env(content)
-        {:error, _} -> :ok
+        {:ok, content} -> parse_env(content)
+        {:error, _} -> %{}
       end
   end
 
-  defp parse_and_set_env(content) do
+  defp put_missing_envs(values) when is_map(values) do
+    Enum.each(values, fn {key, value} ->
+      if is_nil(System.get_env(key)), do: System.put_env(key, value)
+    end)
+  end
+
+  defp parse_env(content) do
     content
     |> String.split("\n")
-    |> Enum.each(fn line ->
+    |> Enum.reduce(%{}, fn line, acc ->
       line = String.trim(line)
 
       with false <- line == "" or String.starts_with?(line, "#"),
            [key, value] <- String.split(line, "=", parts: 2),
            key = String.trim(key),
-           true <- key != "",
-           true <- is_nil(System.get_env(key)) do
-        System.put_env(key, String.trim(value))
+           true <- key != "" do
+        Map.put(acc, key, String.trim(value))
+      else
+        _ -> acc
       end
     end)
   end
@@ -95,23 +103,7 @@ defmodule BullX.Config.Bootstrap do
 
   @doc "Validates `value` against a Zoi schema supplied via the `zoi:` option. Raises on failure."
   def validate!(value, opts) when is_list(opts) do
-    case Keyword.get(opts, :zoi) do
-      nil ->
-        value
-
-      schema_or_fn ->
-        schema = if is_function(schema_or_fn, 0), do: schema_or_fn.(), else: schema_or_fn
-
-        # apply/3 avoids compile-time undefined-module warnings when this file
-        # is loaded before Zoi is compiled.
-        case apply(Zoi, :parse, [schema, value]) do
-          {:ok, _} ->
-            value
-
-          {:error, errors} ->
-            raise "BullX.Config.Bootstrap: Zoi validation failed for value #{inspect(value)}: #{inspect(errors)}"
-        end
-    end
+    apply(BullX.Config.Validation, :validate_bootstrap!, [value, opts])
   end
 
   @doc "Maps a Mix config env atom to a BullX dotenv profile name."

@@ -3,8 +3,10 @@ defmodule BullX.Config.PrecedenceTest do
 
   @db_key_integer "bullx.test_integer"
   @db_key_mode "bullx.test_mode"
+  @db_key_custom "bullx.test_custom"
   @env_integer "BULLX_TEST_INTEGER"
   @env_mode "BULLX_TEST_MODE"
+  @env_custom "BULLX_TEST_CUSTOM"
 
   setup do
     cache_pid = GenServer.whereis(BullX.Config.Cache)
@@ -13,8 +15,10 @@ defmodule BullX.Config.PrecedenceTest do
     on_exit(fn ->
       System.delete_env(@env_integer)
       System.delete_env(@env_mode)
+      System.delete_env(@env_custom)
       BullX.Config.Cache.delete_raw(@db_key_integer)
       BullX.Config.Cache.delete_raw(@db_key_mode)
+      BullX.Config.Cache.delete_raw(@db_key_custom)
     end)
 
     :ok
@@ -74,6 +78,19 @@ defmodule BullX.Config.PrecedenceTest do
     System.put_env(@env_mode, "turbo")
 
     assert BullX.Config.TestSettings.test_mode!() == "safe"
+  end
+
+  test "custom Skogsra type resolves correctly from the OS environment" do
+    System.put_env(@env_custom, "hello")
+
+    assert BullX.Config.TestCustomSettings.test_custom!() == {:demo, "hello"}
+  end
+
+  test "custom Skogsra type resolves correctly from the database override" do
+    insert_config!(@db_key_custom, "world")
+    BullX.Config.Cache.refresh(@db_key_custom)
+
+    assert BullX.Config.TestCustomSettings.test_custom!() == {:demo, "world"}
   end
 
   defp insert_config!(key, value) do

@@ -39,7 +39,7 @@ This RFC must also fit BullX's architectural constraints from [`AGENTS.md`](../.
 - Process-local state must be reconstructible on restart.
 - Configuration is **cross-cutting infrastructure**, not owned by a single subsystem.
 
-That last point is load-bearing. This RFC does **not** place configuration under `BullX.Runtime`, `BullX.Gateway`, or `BullXWeb`; it introduces `BullX.Config` as root-level shared infrastructure, similar in reach to `BullX.Repo`.
+That last point is load-bearing. This RFC does **not** place configuration under `BullX.Runtime`, `BullXGateway`, or `BullXWeb`; it introduces `BullX.Config` as root-level shared infrastructure, similar in reach to `BullX.Repo`.
 
 ## 3. Design Decisions
 
@@ -53,7 +53,7 @@ BullX needs two different configuration paths:
 
    - `BullX.Repo` connection settings
    - `BullXWeb.Endpoint` boot settings
-   - `SECRET_KEY_BASE`
+   - `BULLX_SECRET_BASE`
    - `PORT`
    - `PHX_SERVER`
 
@@ -169,12 +169,12 @@ Skogsra's extension point for custom resolution order is `Skogsra.Binding`, not 
 - `BullX.Config.DatabaseBinding`
 - `BullX.Config.SystemBinding`
 
-Both bindings must cast values before returning them:
+Both bindings must return **raw source values**, not typed values:
 
-- Database binding reads the raw string from ETS and calls `Skogsra.Type.cast(env, raw)`.
-- System binding constructs the OS env var name via `Skogsra.Env.gen_namespace/gen_app_name/gen_keys` (because `os_env/1` only generates a name when `:system` appears in `binding_order`) and reads it with `System.get_env/1`; it also calls `Skogsra.Type.cast(env, raw)`.
+- Database binding reads the raw string from ETS and returns that raw string to Skogsra.
+- System binding constructs the OS env var name via `Skogsra.Env.gen_namespace/gen_app_name/gen_keys` (because `os_env/1` only generates a name when `:system` appears in `binding_order`) and reads it with `System.get_env/1`, then returns that raw string to Skogsra.
 
-If casting succeeds, the binding must additionally apply any declared Zoi schema. If either casting or Zoi validation fails, the binding returns `nil` (the Skogsra convention for "not found, try next binding") so Skogsra continues to the next binding or the default. This is the mechanism that makes "invalid value -> skip -> fallback" deterministic for both database and OS environment inputs.
+When a setting declares `zoi:`, the binding may perform a provisional `Skogsra.Type.cast(env, raw)` only so the candidate can be validated before resolution continues. The binding must **not** return the casted value, because `Skogsra.Binding` applies the authoritative cast after the binding returns. If the provisional cast or Zoi validation fails, the binding returns `nil` (the Skogsra convention for "not found, try next binding") so Skogsra continues to the next binding or the default. This is the mechanism that makes "invalid value -> skip -> fallback" deterministic for both database and OS environment inputs without breaking custom Skogsra types.
 
 ### 3.6 Why BullX disables Skogsra caching for runtime values
 
@@ -260,6 +260,7 @@ lib/bullx/
     ├── app_config.ex                     (NEW — Ecto schema)
     ├── cache.ex                          (NEW — ETS-backed cache process)
     ├── database_binding.ex               (NEW — PostgreSQL/ETS Skogsra binding)
+    ├── secrets.ex                        (NEW — bootstrap-only declarations in the shared DSL)
     ├── supervisor.ex                     (NEW — top-level config supervisor)
     ├── system_binding.ex                 (NEW — strict OS-env Skogsra binding)
     ├── validation.ex                     (NEW — shared cast + Zoi validation helpers)
@@ -327,11 +328,13 @@ defmodule BullX.Config do
   defmacro __using__(_opts) do
     quote do
       use Skogsra
-      import BullX.Config, only: [bullx_env: 2, bullx_env: 3]
+      import BullX.Config, only: [bullx_env: 1, bullx_env: 2]
     end
   end
 
-  defmacro bullx_env(function_name, keys, opts \\ []) do
+  defmacro bullx_env(name, opts \\ []) do
+    {key, opts} = Keyword.pop(opts, :key, name)
+
     merged_opts =
       Keyword.merge(
         [
@@ -342,12 +345,8 @@ defmodule BullX.Config do
         opts
       )
 
-    quote bind_quoted: [
-            function_name: function_name,
-            keys: keys,
-            merged_opts: merged_opts
-          ] do
-      app_env(function_name, :bullx, keys, merged_opts)
+    quote bind_quoted: [name: name, key: key, merged_opts: merged_opts] do
+      app_env(name, :bullx, key, merged_opts)
     end
   end
 
@@ -362,6 +361,7 @@ Important constraints:
 
 - This module is a **shared root namespace**, not a subsystem module.
 - Future runtime config declaration modules must `use BullX.Config`, not raw `use Skogsra`.
+- The public BullX DSL is intentionally **single-name**: the generated function name and BullX config key are the same by default. An optional `key:` escape hatch exists for rare cases, but redundant `function_name, keys` pairs are not the normal authoring model.
 - The DSL must support an optional `zoi:` option whose value is a Zoi schema or a zero-arity function returning a Zoi schema.
 - This RFC does **not** add production settings yet; end-to-end behavior is proven through a test-only declaration module in `test/support`.
 
@@ -372,7 +372,7 @@ defmodule BullX.Config.Runtime do
   use BullX.Config
 
   @envdoc false
-  bullx_env :max_upload_size, :max_upload_size,
+  bullx_env :max_upload_size,
     type: :integer,
     default: 10_485_760,
     zoi: Zoi.integer() |> Zoi.min(1) |> Zoi.max(104_857_600)
@@ -428,7 +428,7 @@ Its presence is deliberate even with a single child, because configuration is gl
 
 ### 7.4 `BullX.Config.Validation`
 
-`lib/bullx/config/validation.ex` centralizes post-cast validation so the same rules are applied by:
+`lib/bullx/config/validation.ex` centralizes Zoi validation so the same rules are applied by:
 
 - `BullX.Config.DatabaseBinding`
 - `BullX.Config.SystemBinding`
@@ -439,6 +439,7 @@ Required responsibilities:
 - extract `:zoi` metadata from a Skogsra env or caller opts
 - normalize either a direct Zoi schema or a zero-arity function returning a schema
 - run `Zoi.parse/2`
+- expose a helper for validating a raw runtime source when a binding needs to probe a candidate before returning the raw value to Skogsra
 - return `{:ok, value}` on success
 - return `{:error, :invalid}` for runtime fallback paths
 - raise a descriptive error for bootstrap fail-fast paths
@@ -535,10 +536,10 @@ Required key format:
 The binding must derive the database key as:
 
 ```text
-<app_name>.<keys joined by ".">
+<app_name>.<key>
 ```
 
-where `app_name` is `:bullx` and `keys` come from the Skogsra declaration.
+where `app_name` is `:bullx` and `key` comes from the BullX config declaration.
 
 The binding must **never** call `String.to_atom/1`.
 
@@ -550,15 +551,16 @@ def get_env(%Skogsra.Env{} = env, _state) do
 
   case BullX.Config.Cache.get_raw(key) do
     {:ok, raw} ->
-      case Skogsra.Type.cast(env, raw) do
-        {:ok, casted} ->
-          BullX.Config.Validation.validate_runtime(env, casted)
+      case BullX.Config.Validation.validate_runtime_raw(env, raw) do
+        :ok ->
+          {:ok, raw}
 
-        :error -> {:error, :invalid}
+        {:error, :invalid} ->
+          nil
       end
 
     :error ->
-      {:error, :not_found}
+      nil
   end
 end
 ```
@@ -571,10 +573,11 @@ This is a strict replacement for Skogsra's built-in `:system` binding for BullX 
 
 Responsibilities:
 
-- read `System.get_env/1` using `Skogsra.Env.os_env(env)`,
-- cast the raw string with `Skogsra.Type.cast/2`,
-- validate the casted value against the declared Zoi schema when present,
-- return `{:error, :invalid}` instead of terminally failing when the env value is malformed.
+- construct the OS env name with `Skogsra.Env.gen_namespace/gen_app_name/gen_keys`,
+- read the raw string with `System.get_env/1`,
+- when `zoi:` is declared, provisionally cast the raw value so it can be validated,
+- return `{:ok, raw}` on success so Skogsra performs the final cast,
+- return `nil` instead of terminally failing when the env value is malformed.
 
 This module is what makes these runtime flows valid:
 
@@ -618,9 +621,9 @@ The bootstrap helper in `config/support/bootstrap.exs` must map BullX environmen
 
 | `config_env()` | dotenv profile |
 | --- | --- |
-| `:dev` | `development` |
+| `:dev` | `dev` |
 | `:test` | `test` |
-| `:prod` | `production` |
+| `:prod` | `prod` |
 | anything else | `Atom.to_string(config_env())` |
 
 The merge order for files must be:
@@ -628,7 +631,7 @@ The merge order for files must be:
 ### Development
 
 1. `.env`
-2. `.env.development`
+2. `.env.dev`
 3. `.env.local`
 4. existing `System.get_env()`
 
@@ -641,12 +644,13 @@ The merge order for files must be:
 ### Production
 
 1. `.env`
-2. `.env.production`
+2. `.env.prod`
 3. existing `System.get_env()`
 
 This means:
 
 - `.env.local` is supported, but only for local development.
+- later `.env*` files override earlier `.env*` files before the merged result is applied to the process environment.
 - exported shell variables always win over file-based values.
 - `.env` values become part of the OS environment layer seen by runtime dynamic config.
 
@@ -693,7 +697,7 @@ Examples of valid bootstrap behavior after this RFC:
 - `.env.local` can define `PORT=4100` in development and the endpoint uses it.
 - `.env.test` can define `POOL_SIZE=5` for tests.
 - exported shell variables such as `PORT=4200 mix phx.server` override all `.env*` files.
-- production still raises on missing required boot variables such as `DATABASE_URL` and `SECRET_KEY_BASE`.
+- production still raises on missing required boot variables such as `DATABASE_URL` and `BULLX_SECRET_BASE`.
 - bootstrap values such as `PORT` may additionally be constrained with Zoi, for example to `1..65_535`
 
 Bootstrap parsing is intentionally **fail-fast**. The "invalid value falls back to the next layer" rule in this RFC applies to **runtime dynamic settings**, not to mandatory boot-time values.
@@ -729,9 +733,9 @@ children = [
   {DNSCluster, query: Application.get_env(:bullx, :dns_cluster_query) || :ignore},
   {Phoenix.PubSub, name: BullX.PubSub},
   BullX.Skills.Supervisor,
-  BullX.Brain.Supervisor,
+  BullXBrain.Supervisor,
   BullX.Runtime.Supervisor,
-  BullX.Gateway.Supervisor,
+  BullXGateway.CoreSupervisor,
   BullXWeb.Endpoint
 ]
 ```
@@ -752,18 +756,18 @@ defmodule BullX.Config.TestSettings do
   use BullX.Config
 
   @envdoc false
-  bullx_env :test_integer, :test_integer,
+  bullx_env :test_integer,
     type: :integer,
     default: 10,
     zoi: Zoi.integer() |> Zoi.min(1) |> Zoi.max(20)
 
   @envdoc false
-  bullx_env :test_boolean, :test_boolean,
+  bullx_env :test_boolean,
     type: :boolean,
     default: false
 
   @envdoc false
-  bullx_env :test_mode, :test_mode,
+  bullx_env :test_mode,
     type: :binary,
     default: "safe",
     zoi: Zoi.enum(["safe", "fast", "strict"])
@@ -782,6 +786,7 @@ This file must prove:
 - Zoi-invalid env override falls back to default
 - missing database override with malformed env falls back to default
 - missing database override with missing env uses default
+- custom Skogsra types resolve correctly from both the database binding and the OS-environment binding
 
 These tests should use `BullX.DataCase` because they depend on `BullX.Repo`.
 
@@ -820,7 +825,7 @@ This file must prove:
 
 This file must exercise the bootstrap helper with temporary `.env*` files and prove:
 
-- development load order is `.env -> .env.development -> .env.local -> existing system env`
+- development load order is `.env -> .env.dev -> .env.local -> existing system env`
 - test load order is `.env -> .env.test -> existing system env`
 - `.env.local` is ignored in test mode
 - typed bootstrap env readers parse expected values and fail fast on malformed required values
@@ -853,7 +858,7 @@ DATABASE_URL=ecto://postgres:postgres@localhost/bullx_dev
 POOL_SIZE=10
 
 # Secrets
-SECRET_KEY_BASE=replace-me
+BULLX_SECRET_BASE=replace-me
 ```
 
 This file is documentation, not a secret-bearing file.
@@ -862,14 +867,14 @@ This file is documentation, not a secret-bearing file.
 
 Adjust `.gitignore` so that repo-root `.env.local` is ignored explicitly.
 
-This RFC does **not** require ignoring `.env`, `.env.development`, or `.env.test`; those files may contain non-secret team defaults and may be committed if desired.
+This RFC does **not** require ignoring `.env`, `.env.dev`, or `.env.test`; those files may contain non-secret team defaults and may be committed if desired.
 
 ### 10.3 READMEs
 
 Update the English, Simplified Chinese, and Japanese READMEs with:
 
 - the new `.env` support
-- the load order of `.env`, `.env.development`, `.env.test`, and `.env.local`
+- the load order of `.env`, `.env.dev`, `.env.test`, and `.env.local`
 - a short explanation of bootstrap config vs runtime dynamic config
 - that runtime settings may declare legal-value constraints with Zoi in addition to primitive types
 - that the existing `config/*.exs` files are still the bootstrap entrypoints, now standardized through shared BullX config helpers
@@ -881,7 +886,7 @@ The README text must be high-level; the RFC remains the source of implementation
 
 The executing agent must not:
 
-- place the config infrastructure under `BullX.Runtime`, `BullX.Gateway`, or `BullXWeb`
+- place the config infrastructure under `BullX.Runtime`, `BullXGateway`, or `BullXWeb`
 - use PostgreSQL `LISTEN/NOTIFY`
 - read runtime dynamic settings directly from the database on every call
 - leave Skogsra runtime variables on `cached: true`

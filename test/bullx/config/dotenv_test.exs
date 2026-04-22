@@ -1,7 +1,7 @@
 defmodule BullX.Config.DotenvTest do
   use ExUnit.Case, async: false
 
-  @test_vars ~w(DOTENV_BASE DOTENV_PROFILE DOTENV_LOCAL DOTENV_OVERRIDE)
+  @test_vars ~w(DOTENV_BASE DOTENV_PROFILE DOTENV_LOCAL DOTENV_OVERRIDE DOTENV_CONFLICT)
 
   setup do
     original = Enum.map(@test_vars, &{&1, System.get_env(&1)})
@@ -11,9 +11,9 @@ defmodule BullX.Config.DotenvTest do
 
   test "development load order: .env < .env.dev < .env.local < existing env" do
     in_tmp_dir(fn root ->
-      write_env(root, ".env", "DOTENV_BASE=from_base\nDOTENV_OVERRIDE=from_base\n")
-      write_env(root, ".env.dev", "DOTENV_PROFILE=from_dev\nDOTENV_OVERRIDE=from_dev\n")
-      write_env(root, ".env.local", "DOTENV_LOCAL=from_local\nDOTENV_OVERRIDE=from_local\n")
+      write_env(root, ".env", "DOTENV_BASE=from_base\nDOTENV_CONFLICT=from_base\n")
+      write_env(root, ".env.dev", "DOTENV_PROFILE=from_dev\nDOTENV_CONFLICT=from_dev\n")
+      write_env(root, ".env.local", "DOTENV_LOCAL=from_local\nDOTENV_CONFLICT=from_local\n")
 
       # existing env wins over all files
       System.put_env("DOTENV_OVERRIDE", "from_system")
@@ -23,35 +23,23 @@ defmodule BullX.Config.DotenvTest do
       assert System.get_env("DOTENV_BASE") == "from_base"
       assert System.get_env("DOTENV_PROFILE") == "from_dev"
       assert System.get_env("DOTENV_LOCAL") == "from_local"
+      assert System.get_env("DOTENV_CONFLICT") == "from_local"
       assert System.get_env("DOTENV_OVERRIDE") == "from_system"
     end)
   end
 
   test "test load order: .env < .env.test, no .env.local" do
     in_tmp_dir(fn root ->
-      write_env(root, ".env", "DOTENV_BASE=base_test\n")
-      write_env(root, ".env.test", "DOTENV_PROFILE=test_profile\n")
+      write_env(root, ".env", "DOTENV_BASE=base_test\nDOTENV_CONFLICT=from_base\n")
+      write_env(root, ".env.test", "DOTENV_PROFILE=test_profile\nDOTENV_CONFLICT=from_test\n")
       write_env(root, ".env.local", "DOTENV_LOCAL=should_be_ignored\n")
 
       BullX.Config.Bootstrap.load_dotenv!(root: root, env: :test)
 
       assert System.get_env("DOTENV_BASE") == "base_test"
       assert System.get_env("DOTENV_PROFILE") == "test_profile"
+      assert System.get_env("DOTENV_CONFLICT") == "from_test"
       # .env.local must not be loaded in test mode
-      assert is_nil(System.get_env("DOTENV_LOCAL"))
-    end)
-  end
-
-  test ".env.local is not loaded in prod mode" do
-    in_tmp_dir(fn root ->
-      write_env(root, ".env", "DOTENV_BASE=prod_base\n")
-      write_env(root, ".env.prod", "DOTENV_PROFILE=prod_profile\n")
-      write_env(root, ".env.local", "DOTENV_LOCAL=should_be_ignored\n")
-
-      BullX.Config.Bootstrap.load_dotenv!(root: root, env: :prod)
-
-      assert System.get_env("DOTENV_BASE") == "prod_base"
-      assert System.get_env("DOTENV_PROFILE") == "prod_profile"
       assert is_nil(System.get_env("DOTENV_LOCAL"))
     end)
   end

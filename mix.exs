@@ -40,6 +40,7 @@ defmodule BullX.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      {:archdo, ">= 0.0.0", github: "BadBeta/archdo", only: [:dev, :test], runtime: false},
       {:phoenix, "~> 1.8.5"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
@@ -52,6 +53,7 @@ defmodule BullX.MixProject do
       {:phoenix_live_dashboard, "~> 0.8.3"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.3", runtime: Mix.env() == :dev},
+      {:jido_signal, path: "/Users/ding/Projects/jido/jido_signal"},
       {:heroicons,
        github: "tailwindlabs/heroicons",
        tag: "v2.2.0",

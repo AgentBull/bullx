@@ -1,4 +1,4 @@
-defmodule BullX.Brain do
+defmodule BullXBrain do
   @moduledoc """
   Persistent memory and knowledge graph. A typed ontology of objects, links, and
   properties forms the skeleton; `(observer, observed)`-keyed cortexes hold

@@ -9,11 +9,13 @@ defmodule BullX.Config do
   defmacro __using__(_opts) do
     quote do
       use Skogsra
-      import BullX.Config, only: [bullx_env: 2, bullx_env: 3]
+      import BullX.Config, only: [bullx_env: 1, bullx_env: 2]
     end
   end
 
-  defmacro bullx_env(function_name, keys, opts \\ []) do
+  defmacro bullx_env(name, opts \\ []) do
+    {key, opts} = Keyword.pop(opts, :key, name)
+
     merged_opts =
       Keyword.merge(
         [
@@ -25,7 +27,7 @@ defmodule BullX.Config do
       )
 
     quote do
-      app_env(unquote(function_name), :bullx, unquote(keys), unquote(merged_opts))
+      app_env(unquote(name), :bullx, unquote(key), unquote(merged_opts))
     end
   end
 

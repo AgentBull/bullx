@@ -1,4 +1,4 @@
-defmodule BullX.Brain.Supervisor do
+defmodule BullXBrain.Supervisor do
   @moduledoc false
   use Supervisor
 

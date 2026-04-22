@@ -7,7 +7,7 @@ defmodule BullX.Config.Secrets do
   Generate with `mix phx.gen.secret`. No default; absence raises at startup.
   Database configuration is intentionally disallowed for this setting.
   """
-  bullx_env(:bullx_secret_base, :secret_base,
+  bullx_env(:secret_base,
     type: :binary,
     required: true,
     binding_order: [BullX.Config.SystemBinding],

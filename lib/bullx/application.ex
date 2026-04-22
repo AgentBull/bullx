@@ -13,10 +13,11 @@ defmodule BullX.Application do
       BullX.Config.Supervisor,
       {DNSCluster, query: Application.get_env(:bullx, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: BullX.PubSub},
+      BullXGateway.CoreSupervisor,
       BullX.Skills.Supervisor,
-      BullX.Brain.Supervisor,
+      BullXBrain.Supervisor,
       BullX.Runtime.Supervisor,
-      BullX.Gateway.Supervisor,
+      BullXGateway.AdapterSupervisor,
       BullXWeb.Endpoint
     ]
 

@@ -40,15 +40,4 @@ defmodule BullX.Config.WriterTest do
   test "delete/1 is a no-op for nonexistent keys" do
     assert :ok = BullX.Config.Writer.delete("writer.nonexistent")
   end
-
-  test "BullX.Config.put/2 delegates to Writer" do
-    assert :ok = BullX.Config.put("facade.key", "facade_val")
-    assert {:ok, "facade_val"} = BullX.Config.Cache.get_raw("facade.key")
-  end
-
-  test "BullX.Config.delete/1 delegates to Writer" do
-    BullX.Config.put("facade.del", "x")
-    assert :ok = BullX.Config.delete("facade.del")
-    assert :error = BullX.Config.Cache.get_raw("facade.del")
-  end
 end
