@@ -2,6 +2,7 @@ defmodule BullXGateway.ControlPlane do
   @moduledoc false
   use GenServer
 
+  alias BullXGateway.ControlPlane.Store.Postgres, as: PostgresStore
   alias BullXGateway.Telemetry
 
   def start_link(opts \\ []) do
@@ -45,9 +46,75 @@ defmodule BullXGateway.ControlPlane do
     GenServer.call(__MODULE__, {:delete_old_trigger_records, before}, :infinity)
   end
 
+  # --- Outbound (RFC 0003) ---
+
+  def put_dispatch(attrs) when is_map(attrs) do
+    GenServer.call(__MODULE__, {:put_dispatch, attrs}, :infinity)
+  end
+
+  def update_dispatch(id, changes) do
+    GenServer.call(__MODULE__, {:update_dispatch, id, changes}, :infinity)
+  end
+
+  def delete_dispatch(id) do
+    GenServer.call(__MODULE__, {:delete_dispatch, id}, :infinity)
+  end
+
+  def fetch_dispatch(id) do
+    GenServer.call(__MODULE__, {:fetch_dispatch, id}, :infinity)
+  end
+
+  def list_dispatches_by_scope(channel, scope_id, statuses) do
+    GenServer.call(
+      __MODULE__,
+      {:list_dispatches_by_scope, channel, scope_id, statuses},
+      :infinity
+    )
+  end
+
+  def put_attempt(attrs) when is_map(attrs) do
+    GenServer.call(__MODULE__, {:put_attempt, attrs}, :infinity)
+  end
+
+  def list_attempts(dispatch_id) do
+    GenServer.call(__MODULE__, {:list_attempts, dispatch_id}, :infinity)
+  end
+
+  def put_dead_letter(attrs) when is_map(attrs) do
+    GenServer.call(__MODULE__, {:put_dead_letter, attrs}, :infinity)
+  end
+
+  def fetch_dead_letter(dispatch_id) do
+    GenServer.call(__MODULE__, {:fetch_dead_letter, dispatch_id}, :infinity)
+  end
+
+  def list_dead_letters(filters \\ []) do
+    GenServer.call(__MODULE__, {:list_dead_letters, filters}, :infinity)
+  end
+
+  def increment_dead_letter_replay_count(dispatch_id) do
+    GenServer.call(__MODULE__, {:increment_dead_letter_replay_count, dispatch_id}, :infinity)
+  end
+
+  def archive_dead_letter(dispatch_id) do
+    GenServer.call(__MODULE__, {:archive_dead_letter, dispatch_id}, :infinity)
+  end
+
+  def purge_dead_letter(dispatch_id) do
+    GenServer.call(__MODULE__, {:purge_dead_letter, dispatch_id}, :infinity)
+  end
+
+  def delete_old_attempts(before) do
+    GenServer.call(__MODULE__, {:delete_old_attempts, before}, :infinity)
+  end
+
+  def delete_old_dead_letters(before) do
+    GenServer.call(__MODULE__, {:delete_old_dead_letters, before}, :infinity)
+  end
+
   @impl true
   def init(opts) do
-    store = Keyword.get(opts, :store, BullXGateway.ControlPlane.Store.Postgres)
+    store = Keyword.get(opts, :store, PostgresStore)
     {:ok, %{store: store}}
   end
 
@@ -98,6 +165,82 @@ defmodule BullXGateway.ControlPlane do
 
   def handle_call({:delete_old_trigger_records, before}, _from, %{store: store} = state) do
     {:reply, store.delete_old_trigger_records(before), state}
+  end
+
+  def handle_call({:put_dispatch, attrs}, _from, %{store: store} = state) do
+    {:reply, store.put_dispatch(attrs), state}
+  end
+
+  def handle_call({:update_dispatch, id, changes}, _from, %{store: store} = state) do
+    {:reply, store.update_dispatch(id, changes), state}
+  end
+
+  def handle_call({:delete_dispatch, id}, _from, %{store: store} = state) do
+    {:reply, store.delete_dispatch(id), state}
+  end
+
+  def handle_call({:fetch_dispatch, id}, _from, %{store: store} = state) do
+    {:reply, store.fetch_dispatch(id), state}
+  end
+
+  def handle_call(
+        {:list_dispatches_by_scope, channel, scope_id, statuses},
+        _from,
+        %{store: store} = state
+      ) do
+    {:reply, store.list_dispatches_by_scope(channel, scope_id, statuses), state}
+  end
+
+  def handle_call({:put_attempt, attrs}, _from, %{store: store} = state) do
+    {:reply, store.put_attempt(attrs), state}
+  end
+
+  def handle_call({:list_attempts, dispatch_id}, _from, %{store: store} = state) do
+    {:reply, store.list_attempts(dispatch_id), state}
+  end
+
+  def handle_call({:put_dead_letter, attrs}, _from, %{store: store} = state) do
+    {:reply, store.put_dead_letter(attrs), state}
+  end
+
+  def handle_call({:fetch_dead_letter, dispatch_id}, _from, %{store: store} = state) do
+    {:reply, store.fetch_dead_letter(dispatch_id), state}
+  end
+
+  def handle_call({:list_dead_letters, filters}, _from, %{store: store} = state) do
+    {:reply, store.list_dead_letters(filters), state}
+  end
+
+  def handle_call(
+        {:increment_dead_letter_replay_count, dispatch_id},
+        _from,
+        %{store: store} = state
+      ) do
+    {:reply, store.increment_dead_letter_replay_count(dispatch_id), state}
+  end
+
+  def handle_call({:archive_dead_letter, dispatch_id}, _from, %{store: store} = state) do
+    {:reply, invoke_optional(store, :archive_dead_letter, [dispatch_id]), state}
+  end
+
+  def handle_call({:purge_dead_letter, dispatch_id}, _from, %{store: store} = state) do
+    {:reply, invoke_optional(store, :purge_dead_letter, [dispatch_id]), state}
+  end
+
+  def handle_call({:delete_old_attempts, before}, _from, %{store: store} = state) do
+    {:reply, invoke_optional(store, :delete_old_attempts, [before]), state}
+  end
+
+  def handle_call({:delete_old_dead_letters, before}, _from, %{store: store} = state) do
+    {:reply, invoke_optional(store, :delete_old_dead_letters, [before]), state}
+  end
+
+  defp invoke_optional(store, fun, args) do
+    if function_exported?(store, fun, length(args)) do
+      apply(store, fun, args)
+    else
+      {:error, :not_implemented}
+    end
   end
 
   defp duration(started_at) do

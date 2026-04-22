@@ -1,6 +1,5 @@
 # RFC 0003: Gateway Delivery + ScopeWorker + DLQ
 
-- **Status**: Draft
 - **Author**: Boris Ding
 - **Created**: 2026-04-22
 - **Supersedes**: `rfcs/drafts/Gateway.md` (jointly with RFC 0002)

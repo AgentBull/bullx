@@ -10,9 +10,15 @@ defmodule BullXGateway do
   alias BullXGateway.ControlPlane
   alias BullXGateway.ControlPlane.InboundReplay
   alias BullXGateway.Deduper
+  alias BullXGateway.Delivery
+  alias BullXGateway.Delivery.Outcome
+  alias BullXGateway.DLQ.ReplayWorker
   alias BullXGateway.Gating
   alias BullXGateway.Json
   alias BullXGateway.Moderation
+  alias BullXGateway.OutboundDeduper
+  alias BullXGateway.RetryPolicy
+  alias BullXGateway.ScopeWorker
   alias BullXGateway.Security
   alias BullXGateway.SignalContext
   alias BullXGateway.Signals.InboundReceived
@@ -323,4 +329,269 @@ defmodule BullXGateway do
   defp telemetry_outcome({:error, {:policy_denied, :gating, _, _}}), do: :denied_gating
   defp telemetry_outcome({:error, {:policy_denied, :moderation, _, _}}), do: :rejected_moderation
   defp telemetry_outcome(_), do: :error
+
+  # ---------------------------------------------------------------------------
+  # Egress (RFC 0003)
+  # ---------------------------------------------------------------------------
+
+  @type delivery_error ::
+          {:invalid_delivery, term()}
+          | {:unknown_channel, Delivery.channel()}
+          | {:security_denied, :sanitize, atom(), String.t()}
+          | {:store_unavailable, term()}
+
+  @spec deliver(Delivery.t() | term(), keyword()) ::
+          {:ok, String.t()} | {:error, delivery_error()}
+  def deliver(delivery, opts \\ [])
+
+  def deliver(%Delivery{} = delivery, opts) do
+    metadata = %{
+      delivery_id: delivery.id,
+      op: delivery.op,
+      channel: delivery.channel,
+      scope_id: delivery.scope_id
+    }
+
+    :telemetry.span([:bullx, :gateway, :deliver], metadata, fn ->
+      result = do_deliver(delivery, opts)
+      {result, %{outcome: deliver_telemetry_outcome(result)}}
+    end)
+  end
+
+  def deliver(other, _opts) do
+    {:error, {:invalid_delivery, {:not_a_delivery, other}}}
+  end
+
+  @spec cancel_stream(String.t()) :: :ok | {:error, :not_found}
+  def cancel_stream(delivery_id) when is_binary(delivery_id) do
+    ScopeWorker.cancel_stream(delivery_id)
+  end
+
+  @spec replay_dead_letter(String.t()) ::
+          {:ok, %{status: :replayed, dispatch: map()}} | {:error, :not_found | term()}
+  def replay_dead_letter(dispatch_id) when is_binary(dispatch_id) do
+    ReplayWorker.replay(dispatch_id)
+  end
+
+  @spec list_dead_letters(keyword()) :: {:ok, [map()]}
+  def list_dead_letters(opts \\ []) do
+    ControlPlane.list_dead_letters(opts)
+  end
+
+  @spec archive_dead_letter(String.t()) :: :ok | {:error, term()}
+  def archive_dead_letter(dispatch_id) when is_binary(dispatch_id) do
+    ControlPlane.archive_dead_letter(dispatch_id)
+  end
+
+  @spec purge_dead_letter(String.t()) :: :ok | {:error, term()}
+  def purge_dead_letter(dispatch_id) when is_binary(dispatch_id) do
+    ControlPlane.purge_dead_letter(dispatch_id)
+  end
+
+  defp do_deliver(delivery, opts) do
+    gateway_config = Application.get_env(:bullx, __MODULE__, [])
+
+    policy_timeout_fallback =
+      Keyword.get(
+        opts,
+        :policy_timeout_fallback,
+        Keyword.get(gateway_config, :policy_timeout_fallback, :deny)
+      )
+
+    policy_error_fallback =
+      Keyword.get(
+        opts,
+        :policy_error_fallback,
+        Keyword.get(gateway_config, :policy_error_fallback, :deny)
+      )
+
+    with :ok <- validate_delivery(delivery),
+         {:ok, adapter_entry} <- lookup_channel(delivery.channel),
+         :ok <- precheck_capabilities(delivery, adapter_entry),
+         {:ok, delivery} <-
+           sanitize(
+             delivery,
+             stage_config(gateway_config, opts, :security),
+             policy_timeout_fallback,
+             policy_error_fallback
+           ) do
+      case OutboundDeduper.seen?(delivery.id) do
+        {:hit, cached_outcome} ->
+          publish_duplicate_success(delivery, cached_outcome)
+          {:ok, delivery.id}
+
+        :miss ->
+          dispatch_to_scope(delivery, adapter_entry)
+      end
+    else
+      {:capability_unsupported, reason} ->
+        publish_unsupported_failure(delivery, reason)
+        {:ok, delivery.id}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp validate_delivery(delivery) do
+    case Delivery.validate(delivery) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:invalid_delivery, reason}}
+    end
+  end
+
+  defp lookup_channel(channel) do
+    case AdapterRegistry.lookup(channel) do
+      {:ok, entry} -> {:ok, entry}
+      :error -> {:error, {:unknown_channel, channel}}
+    end
+  end
+
+  defp precheck_capabilities(delivery, adapter_entry) do
+    module = adapter_entry.module
+
+    cond do
+      not function_exported?(module, :capabilities, 0) ->
+        {:capability_unsupported, {:op, delivery.op}}
+
+      delivery.op in module.capabilities() ->
+        :ok
+
+      true ->
+        {:capability_unsupported, {:op, delivery.op}}
+    end
+  end
+
+  defp sanitize(delivery, security_config, timeout_fallback, error_fallback) do
+    case Security.sanitize_outbound(
+           delivery.channel,
+           delivery,
+           security_config,
+           timeout_fallback,
+           error_fallback
+         ) do
+      {:ok, %Delivery{} = sanitized} -> {:ok, sanitized}
+      {:ok, %Delivery{} = sanitized, _metadata} -> {:ok, sanitized}
+      {:error, {:security_denied, _, _, _} = reason} -> {:error, reason}
+    end
+  end
+
+  defp dispatch_to_scope(delivery, adapter_entry) do
+    retry_policy = RetryPolicy.build(Map.get(adapter_entry.config, :retry_policy, %{}))
+
+    attrs = %{
+      id: delivery.id,
+      op: Atom.to_string(delivery.op),
+      channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
+      channel_tenant: elem(delivery.channel, 1),
+      scope_id: delivery.scope_id,
+      thread_id: delivery.thread_id,
+      caused_by_signal_id: delivery.caused_by_signal_id,
+      payload: ScopeWorker.encode_delivery_payload(delivery),
+      status: "queued",
+      attempts: 0,
+      max_attempts: retry_policy.max_attempts,
+      available_at: nil,
+      last_error: nil
+    }
+
+    case ControlPlane.put_dispatch(attrs) do
+      :ok ->
+        :ok = ScopeWorker.enqueue(delivery.channel, delivery.scope_id, delivery.id)
+        {:ok, delivery.id}
+
+      {:error, :duplicate} ->
+        # Belt-and-suspenders for an in-flight duplicate: treat as idempotent
+        # (RFC 0003 §7.7.4). The original dispatch's outcome signal is what
+        # the caller observes.
+        {:ok, delivery.id}
+
+      {:error, reason} ->
+        {:error, {:store_unavailable, reason}}
+    end
+  end
+
+  defp publish_unsupported_failure(delivery, {:op, op}) do
+    error_map = %{
+      "kind" => "unsupported",
+      "message" => "Adapter does not declare op-capability #{inspect(op)}",
+      "details" => %{"op" => Atom.to_string(op)}
+    }
+
+    outcome = Outcome.new_failure(delivery.id, error_map)
+    publish_delivery_signal(delivery, outcome)
+
+    now = DateTime.utc_now()
+
+    _ =
+      ControlPlane.put_dead_letter(%{
+        dispatch_id: delivery.id,
+        op: Atom.to_string(delivery.op),
+        channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
+        channel_tenant: elem(delivery.channel, 1),
+        scope_id: delivery.scope_id,
+        thread_id: delivery.thread_id,
+        caused_by_signal_id: delivery.caused_by_signal_id,
+        payload: ScopeWorker.encode_delivery_payload(delivery),
+        final_error: error_map,
+        attempts_total: 0,
+        dead_lettered_at: now
+      })
+
+    :ok
+  end
+
+  defp publish_duplicate_success(delivery, %Outcome{} = cached_outcome) do
+    outcome = Outcome.append_warnings(cached_outcome, ["duplicate_delivery_id"])
+    publish_delivery_signal(delivery, outcome)
+  end
+
+  defp publish_delivery_signal(delivery, %Outcome{} = outcome) do
+    {adapter, tenant} = delivery.channel
+
+    type =
+      case outcome.status do
+        :failed -> "com.agentbull.x.delivery.failed"
+        _ -> "com.agentbull.x.delivery.succeeded"
+      end
+
+    subject = render_delivery_subject(adapter, delivery.scope_id, delivery.thread_id)
+
+    extensions =
+      %{
+        "bullx_channel_adapter" => Atom.to_string(adapter),
+        "bullx_channel_tenant" => tenant
+      }
+
+    extensions =
+      case delivery.caused_by_signal_id do
+        nil -> extensions
+        id -> Map.put(extensions, "bullx_caused_by", id)
+      end
+
+    case Signal.new(%{
+           id: Signal.ID.generate!(),
+           source: "bullx://gateway/#{adapter}/#{tenant}",
+           type: type,
+           subject: subject,
+           time: DateTime.to_iso8601(DateTime.utc_now()),
+           datacontenttype: "application/json",
+           data: Outcome.to_signal_data(outcome),
+           extensions: extensions
+         }) do
+      {:ok, signal} -> Bus.publish(BullXGateway.SignalBus, [signal])
+      {:error, _} = error -> error
+    end
+  end
+
+  defp render_delivery_subject(adapter, scope_id, nil), do: "#{adapter}:#{scope_id}"
+
+  defp render_delivery_subject(adapter, scope_id, thread_id),
+    do: "#{adapter}:#{scope_id}:#{thread_id}"
+
+  defp deliver_telemetry_outcome({:ok, _}), do: :accepted
+  defp deliver_telemetry_outcome({:error, {:invalid_delivery, _}}), do: :invalid_delivery
+  defp deliver_telemetry_outcome({:error, {:unknown_channel, _}}), do: :unknown_channel
+  defp deliver_telemetry_outcome({:error, {:security_denied, _, _, _}}), do: :security_denied
+  defp deliver_telemetry_outcome(_), do: :error
 end

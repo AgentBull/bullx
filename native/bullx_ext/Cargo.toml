@@ -11,11 +11,14 @@ path = "src/lib.rs"
 [dependencies]
 rustler = "0.37.3"
 mimalloc = "0.1.48"
+any_ascii = "0.3.3"
+base64-simd = "0.8.0"
 blake3 = "1.8.4"
 bs58 = "0.5.1"
 hex = "0.4.3"
 rand = { version = "0.10.1", features = ["sys_rng"] }
 rand_chacha = "0.10.0"
+z85 = "3.0.6"
 
 
 

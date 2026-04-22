@@ -1,6 +1,5 @@
 # RFC 0002: Gateway Inbound + ControlPlane
 
-- **Status**: Draft
 - **Author**: Boris Ding
 - **Created**: 2026-04-22
 - **Supersedes**: `rfcs/drafts/Gateway.md` (jointly with RFC 0003)

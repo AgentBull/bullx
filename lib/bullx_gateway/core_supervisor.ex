@@ -11,10 +11,15 @@ defmodule BullXGateway.CoreSupervisor do
   def init(:ok) do
     children = [
       {Task.Supervisor, name: BullXGateway.PolicyTaskSupervisor},
+      {Task.Supervisor, name: BullXGateway.Dispatcher.TaskSupervisor},
       {BullXGateway.ControlPlane, store: BullXGateway.ControlPlane.Store.Postgres},
       {Jido.Signal.Bus, name: BullXGateway.SignalBus},
       BullXGateway.AdapterRegistry,
       BullXGateway.Deduper,
+      BullXGateway.OutboundDeduper,
+      BullXGateway.ScopeRegistry,
+      BullXGateway.Dispatcher,
+      BullXGateway.DLQ.ReplaySupervisor,
       BullXGateway.Retention,
       BullXGateway.ControlPlane.InboundReplay,
       BullXGateway.Telemetry

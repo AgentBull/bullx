@@ -9,4 +9,6 @@ mod crypto {
   pub mod blake3;
 }
 
+mod encoding;
+
 rustler::init!("Elixir.BullX.Ext");

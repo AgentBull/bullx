@@ -1,6 +1,5 @@
 # RFC 0001: Global Dynamic Configuration
 
-- **Status**: Draft
 - **Author**: Boris Ding
 - **Created**: 2026-04-19
 

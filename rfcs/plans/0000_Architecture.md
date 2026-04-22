@@ -1,6 +1,5 @@
 # RFC 0000: Architecture Scaffolding
 
-- **Status**: Draft
 - **Author**: Boris Ding
 - **Created**: 2026-04-19
 - **Supersedes**: `rfcs/drafts/Architecture.md`

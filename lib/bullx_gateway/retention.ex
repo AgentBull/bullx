@@ -6,6 +6,9 @@ defmodule BullXGateway.Retention do
 
   @default_interval_ms :timer.hours(1)
   @trigger_retention_seconds 7 * 24 * 60 * 60
+  @attempts_retention_seconds 7 * 24 * 60 * 60
+  @dead_letters_retention_seconds 90 * 24 * 60 * 60
+  @dispatches_orphan_retention_seconds 7 * 24 * 60 * 60
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -35,10 +38,31 @@ defmodule BullXGateway.Retention do
   end
 
   defp run_cleanup(state) do
-    before = DateTime.add(DateTime.utc_now(), -@trigger_retention_seconds, :second)
-    _ = ControlPlane.delete_old_trigger_records(before)
+    now = DateTime.utc_now()
+
+    _ = ControlPlane.delete_old_trigger_records(DateTime.add(now, -@trigger_retention_seconds, :second))
     _ = ControlPlane.delete_expired_dedupe_seen()
+    _ = ControlPlane.delete_old_attempts(DateTime.add(now, -@attempts_retention_seconds, :second))
+
+    _ =
+      ControlPlane.delete_old_dead_letters(
+        DateTime.add(now, -@dead_letters_retention_seconds, :second)
+      )
+
+    # Belt-and-suspenders orphan sweep: terminal success and dead-letter
+    # paths already delete the row, so this should be a no-op in normal
+    # operation (RFC 0003 §7.9).
+    _ = delete_orphan_dispatches(DateTime.add(now, -@dispatches_orphan_retention_seconds, :second))
+
     state
+  end
+
+  defp delete_orphan_dispatches(before) do
+    import Ecto.Query
+    alias BullXGateway.ControlPlane.Dispatch
+    alias BullX.Repo
+
+    Repo.delete_all(from d in Dispatch, where: d.inserted_at < ^before)
   end
 
   defp schedule(interval_ms) do
