@@ -39,10 +39,10 @@ BullX is a single `:bullx` OTP application. Subsystems are placed on one of two 
 
 ### 3.2 Out of scope
 
-- **External dependencies.** No new package is added to `mix.exs`. The default dependency set from `mix phx.new` is sufficient for this RFC, and subsequent RFCs will add the libraries they need (Jido, Ash, etc.) as part of their own scope.
+- **External dependencies.** No new package is added to `mix.exs`. The default dependency set from `mix phx.new` is sufficient for this RFC, and subsequent RFCs will add the libraries they need (Jido, etc.) as part of their own scope.
 - **Inner supervision.** Registries, `DynamicSupervisor`s, `Task.Supervisor`s, `GenServer`s — anything that would live *under* a subsystem supervisor — are deferred to the subsystem-specific RFC that implements behavior.
-- **Behavior.** No schema, migration, Ash resource, Ecto context, adapter implementation, LLM integration, prompt type, reasoning strategy, workflow engine, scheduler, consolidation job, skill, or frontend change belongs in this RFC.
-- **BullXWeb.** The existing Phoenix scaffold is left alone. The eventual migration to Ash JSON API + Vite SPA is a separate RFC.
+- **Behavior.** No schema, migration, Ecto context, adapter implementation, LLM integration, prompt type, reasoning strategy, workflow engine, scheduler, consolidation job, skill, or frontend change belongs in this RFC.
+- **BullXWeb.** The existing Phoenix scaffold is left alone. The eventual migration to a JSON API + Vite SPA is a separate RFC.
 - **packages/** is not touched. `packages/` is reserved for externally reusable libraries (e.g. `packages/feishu_openapi/`); BullX-internal subsystems live in `lib/` as L1 or L2 namespaces, never as separate mix projects.
 
 ## 4. Target structure
@@ -160,7 +160,7 @@ The executing agent must not:
 - Create any file not listed in §4.
 - Place any child in the new supervisors' `init/1` lists.
 - Modify `lib/bullx_web/`, `assets/`, or `packages/`.
-- Reference `Jido`, `Ash`, or any Hex package that isn't already in the current `mix.exs`.
+- Reference `Jido` or any Hex package that isn't already in the current `mix.exs`.
 
 If a subsystem RFC later needs to add inner children, split a top-level supervisor, or tighten startup ordering, that RFC owns the change to `lib/bullx/<subsystem>/supervisor.ex` and the application child list.
 

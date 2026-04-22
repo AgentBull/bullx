@@ -479,8 +479,6 @@ The migration creates:
 
 The migration must be generated via `mix ecto.gen.migration create_app_configs`.
 
-**Ash compatibility constraint:** `BullX.Config.AppConfig` must remain a plain Ecto schema and must never be converted into an Ash resource. `BullX.Config.Cache` starts immediately after `BullX.Repo`, before any Ash domain is initialized. If `app_configs` were an Ash resource, the config layer would depend on Ash being ready, creating a circular startup dependency. If a future control-plane RFC needs to expose config rows through Ash, it must add a separate Ash resource that targets the same table rather than replacing `BullX.Config.AppConfig`.
-
 ### 7.6 `BullX.Config.Cache`
 
 `lib/bullx/config/cache.ex` is the ETS-backed cache owner.
@@ -894,7 +892,6 @@ The executing agent must not:
 - introduce Phoenix UI work under `lib/bullx_web/`
 - leave direct `System.get_env/1` parsing duplicated across `config/*.exs`
 - duplicate Zoi validation logic instead of routing it through shared config validation helpers
-- convert `BullX.Config.AppConfig` into an Ash resource; it must remain a plain Ecto schema to avoid a circular startup dependency with Ash domains
 
 The executing agent must preserve these invariants:
 
