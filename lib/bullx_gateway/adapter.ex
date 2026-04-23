@@ -4,7 +4,7 @@ defmodule BullXGateway.Adapter do
 
   Gateway core owns delivery orchestration, retries, DLQ, and dedupe. Adapters
   only translate a `BullXGateway.Delivery` into a transport-specific side
-  effect and may start transport-local children for a `{adapter, tenant}`
+  effect and may start transport-local children for a `{adapter, channel_id}`
   channel. `capabilities/0` is the contract Gateway uses to decide which
   operations and metadata shapes a channel actually supports.
   """

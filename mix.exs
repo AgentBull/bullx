@@ -66,7 +66,8 @@ defmodule BullX.MixProject do
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
-      {:gettext, "~> 1.0"},
+      {:localize, "~> 0.1.0"},
+      {:toml_elixir, "~> 3.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
@@ -95,7 +96,13 @@ defmodule BullX.MixProject do
         "esbuild bullx --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "i18n.check",
+        "test"
+      ]
     ]
   end
 end

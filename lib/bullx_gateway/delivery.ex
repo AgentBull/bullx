@@ -13,8 +13,8 @@ defmodule BullXGateway.Delivery do
   alias BullXGateway.Delivery.Content
 
   @type adapter :: atom()
-  @type tenant :: String.t()
-  @type channel :: {adapter(), tenant()}
+  @type channel_id :: String.t()
+  @type channel :: {adapter(), channel_id()}
   @type op :: :send | :edit | :stream
 
   @type t :: %__MODULE__{
@@ -75,8 +75,8 @@ defmodule BullXGateway.Delivery do
   defp validate_op(op) when op in [:send, :edit, :stream], do: :ok
   defp validate_op(op), do: {:error, {:invalid_op, op}}
 
-  defp validate_channel({adapter, tenant})
-       when is_atom(adapter) and is_binary(tenant) and tenant != "",
+  defp validate_channel({adapter, channel_id})
+       when is_atom(adapter) and is_binary(channel_id) and channel_id != "",
        do: :ok
 
   defp validate_channel(channel), do: {:error, {:invalid_channel, channel}}

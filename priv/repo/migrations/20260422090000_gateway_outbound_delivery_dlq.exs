@@ -7,7 +7,7 @@ defmodule BullX.Repo.Migrations.GatewayOutboundDeliveryDlq do
       dispatch_id text PRIMARY KEY,
       op text NOT NULL,
       channel_adapter text NOT NULL,
-      channel_tenant text NOT NULL,
+      channel_id text NOT NULL,
       scope_id text NOT NULL,
       thread_id text,
       caused_by_signal_id text,
@@ -22,7 +22,7 @@ defmodule BullX.Repo.Migrations.GatewayOutboundDeliveryDlq do
 
     execute("""
     CREATE INDEX gateway_dead_letters_scope_index
-    ON gateway_dead_letters (channel_adapter, channel_tenant, scope_id, dead_lettered_at)
+    ON gateway_dead_letters (channel_adapter, channel_id, scope_id, dead_lettered_at)
     """)
 
     execute("""

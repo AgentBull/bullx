@@ -62,6 +62,18 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# I18n / Localize bootstrap. `BullX.I18n.Catalog` owns the per-key
+# translation dictionaries under `priv/locales/*.toml`; Localize is
+# used only for MF2 parsing/formatting and CLDR data. We deliberately
+# do NOT pin `:supported_locales` here — Localize's CLDR-backed
+# locale resolution stays on its default (all CLDR IDs) so MF2
+# formatters can look up number systems, plurals, etc.
+config :localize,
+  default_locale: :en,
+  mf2_functions: %{}
+
+config :bullx, :i18n, locales_dir: "priv/locales"
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

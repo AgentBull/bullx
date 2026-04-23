@@ -40,9 +40,8 @@ defmodule BullXWeb do
     quote do
       use Phoenix.Controller, formats: [:html, :json]
 
-      use Gettext, backend: BullXWeb.Gettext
-
       import Plug.Conn
+      import BullXWeb.I18n.HTML, only: [t: 1, t: 2, t: 3]
 
       unquote(verified_routes())
     end
@@ -80,7 +79,7 @@ defmodule BullXWeb do
   defp html_helpers do
     quote do
       # Translation
-      use Gettext, backend: BullXWeb.Gettext
+      import BullXWeb.I18n.HTML, only: [t: 1, t: 2, t: 3]
 
       # HTML escaping functionality
       import Phoenix.HTML

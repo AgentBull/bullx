@@ -56,12 +56,12 @@ defmodule BullXGateway.Signals.InboundReceived do
   end
 
   defp signal_attrs(input) do
-    with {:ok, {adapter, tenant}} <- channel(input.channel),
+    with {:ok, {adapter, channel_id}} <- channel(input.channel),
          {:ok, data} <- render_data(input),
          {:ok, extensions} <-
            Json.normalize(%{
              bullx_channel_adapter: adapter,
-             bullx_channel_tenant: tenant
+             bullx_channel_id: channel_id
            }) do
       {:ok,
        %{
@@ -258,8 +258,8 @@ defmodule BullXGateway.Signals.InboundReceived do
       blank?(extensions["bullx_channel_adapter"]) ->
         {:error, :missing_channel_adapter}
 
-      blank?(extensions["bullx_channel_tenant"]) ->
-        {:error, :missing_channel_tenant}
+      blank?(extensions["bullx_channel_id"]) ->
+        {:error, :missing_channel_id}
 
       Map.has_key?(extensions, "bullx_flags") and not valid_flags?(extensions["bullx_flags"]) ->
         {:error, :invalid_flags}
@@ -379,7 +379,8 @@ defmodule BullXGateway.Signals.InboundReceived do
   defp validate_reply_channel(%{
          "duplex" => true,
          "reply_channel" =>
-           %{"adapter" => adapter, "tenant" => tenant, "scope_id" => scope_id} = reply_channel,
+           %{"adapter" => adapter, "channel_id" => channel_id, "scope_id" => scope_id} =
+             reply_channel,
          "scope_id" => data_scope_id,
          "thread_id" => data_thread_id
        }) do
@@ -387,8 +388,8 @@ defmodule BullXGateway.Signals.InboundReceived do
       blank?(adapter) ->
         {:error, :missing_reply_channel_adapter}
 
-      blank?(tenant) ->
-        {:error, :missing_reply_channel_tenant}
+      blank?(channel_id) ->
+        {:error, :missing_reply_channel_id}
 
       blank?(scope_id) ->
         {:error, :missing_reply_channel_scope_id}
@@ -472,8 +473,8 @@ defmodule BullXGateway.Signals.InboundReceived do
 
   defp validate_type_specific(%{"event" => %{"type" => "trigger"}}), do: :ok
 
-  defp channel({adapter, tenant}) when is_atom(adapter) and is_binary(tenant),
-    do: {:ok, {Atom.to_string(adapter), tenant}}
+  defp channel({adapter, channel_id}) when is_atom(adapter) and is_binary(channel_id),
+    do: {:ok, {Atom.to_string(adapter), channel_id}}
 
   defp channel(_), do: {:error, :invalid_channel}
 

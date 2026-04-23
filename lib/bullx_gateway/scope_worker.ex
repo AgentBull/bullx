@@ -1,6 +1,6 @@
 defmodule BullXGateway.ScopeWorker do
   @moduledoc """
-  One process per `{{adapter, tenant}, scope_id}`. Serializes outbound
+  One process per `{{adapter, channel_id}, scope_id}`. Serializes outbound
   dispatches against the adapter.
 
   State is entirely in-memory: the queue, the current running delivery, the
@@ -320,15 +320,24 @@ defmodule BullXGateway.ScopeWorker do
   end
 
   defp record_success(state, delivery, attempt_num, %Outcome{} = outcome) do
-    publish_outcome_signal(state, delivery, outcome)
-    OutboundDeduper.mark_success(delivery.id, outcome)
+    case publish_outcome_signal(state, delivery, outcome) do
+      :ok ->
+        OutboundDeduper.mark_success(delivery.id, outcome)
 
-    emit_telemetry(:finished, state, delivery, %{attempts: attempt_num}, %{
-      outcome: outcome.status,
-      error_kind: nil
-    })
+        emit_telemetry(:finished, state, delivery, %{attempts: attempt_num}, %{
+          outcome: outcome.status,
+          error_kind: nil
+        })
 
-    advance_next(forget_delivery(%{state | status: :idle}, delivery.id))
+        advance_next(forget_delivery(%{state | status: :idle}, delivery.id))
+
+      {:error, reason} ->
+        Logger.error(
+          "delivery success outcome publish failed for #{delivery.id}: #{inspect(reason)}"
+        )
+
+        advance_next(forget_delivery(%{state | status: :idle}, delivery.id))
+    end
   end
 
   defp record_failure(state, delivery, attempt_num, error_map) do
@@ -353,27 +362,41 @@ defmodule BullXGateway.ScopeWorker do
     outcome = Outcome.new_failure(delivery.id, error_map)
     now = DateTime.utc_now()
 
-    _ =
-      ControlPlane.put_dead_letter(%{
-        dispatch_id: delivery.id,
-        op: Atom.to_string(delivery.op),
-        channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
-        channel_tenant: elem(delivery.channel, 1),
-        scope_id: delivery.scope_id,
-        thread_id: delivery.thread_id,
-        caused_by_signal_id: delivery.caused_by_signal_id,
-        payload: encode_delivery_payload(delivery),
-        final_error: error_map,
-        attempts_total: attempt_num,
-        dead_lettered_at: now
-      })
+    case ControlPlane.put_dead_letter(%{
+           dispatch_id: delivery.id,
+           op: Atom.to_string(delivery.op),
+           channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
+           channel_id: elem(delivery.channel, 1),
+           scope_id: delivery.scope_id,
+           thread_id: delivery.thread_id,
+           caused_by_signal_id: delivery.caused_by_signal_id,
+           payload: encode_delivery_payload(delivery),
+           final_error: error_map,
+           attempts_total: attempt_num,
+           dead_lettered_at: now
+         }) do
+      :ok ->
+        publish_failure_outcome(state, delivery, attempt_num, outcome, error_map)
 
-    publish_outcome_signal(state, delivery, outcome)
+      {:error, reason} ->
+        Logger.error("delivery DLQ write failed for #{delivery.id}: #{inspect(reason)}")
+        advance_next(forget_delivery(%{state | status: :idle}, delivery.id))
+    end
+  end
 
-    emit_telemetry(:finished, state, delivery, %{attempts: attempt_num}, %{
-      outcome: :failed,
-      error_kind: error_map["kind"]
-    })
+  defp publish_failure_outcome(state, delivery, attempt_num, outcome, error_map) do
+    case publish_outcome_signal(state, delivery, outcome) do
+      :ok ->
+        emit_telemetry(:finished, state, delivery, %{attempts: attempt_num}, %{
+          outcome: :failed,
+          error_kind: error_map["kind"]
+        })
+
+      {:error, reason} ->
+        Logger.error(
+          "delivery failure outcome publish failed for #{delivery.id}: #{inspect(reason)}"
+        )
+    end
 
     advance_next(forget_delivery(%{state | status: :idle}, delivery.id))
   end
@@ -532,7 +555,7 @@ defmodule BullXGateway.ScopeWorker do
   defp exception_module(_), do: "unknown"
 
   defp publish_outcome_signal(state, delivery, %Outcome{} = outcome) do
-    {adapter, tenant} = state.channel
+    {adapter, channel_id} = state.channel
 
     type =
       case outcome.status do
@@ -543,7 +566,7 @@ defmodule BullXGateway.ScopeWorker do
     extensions =
       %{
         "bullx_channel_adapter" => Atom.to_string(adapter),
-        "bullx_channel_tenant" => tenant
+        "bullx_channel_id" => channel_id
       }
 
     extensions =
@@ -554,27 +577,22 @@ defmodule BullXGateway.ScopeWorker do
 
     subject = render_subject(adapter, state.scope_id, Map.get(delivery, :thread_id))
 
-    case Signal.new(%{
-           id: Signal.ID.generate!(),
-           source: "bullx://gateway/#{adapter}/#{tenant}",
-           type: type,
-           subject: subject,
-           time: DateTime.to_iso8601(DateTime.utc_now()),
-           datacontenttype: "application/json",
-           data: Outcome.to_signal_data(outcome),
-           extensions: extensions
-         }) do
-      {:ok, signal} ->
-        case Bus.publish(BullXGateway.SignalBus, [signal]) do
-          {:ok, _} ->
-            :ok
+    attrs = %{
+      id: Signal.ID.generate!(),
+      source: "bullx://gateway/#{adapter}/#{channel_id}",
+      type: type,
+      subject: subject,
+      time: DateTime.to_iso8601(DateTime.utc_now()),
+      datacontenttype: "application/json",
+      data: Outcome.to_signal_data(outcome),
+      extensions: extensions
+    }
 
-          {:error, reason} ->
-            Logger.warning("delivery outcome bus publish failed: #{inspect(reason)}")
-        end
-
-      {:error, reason} ->
-        Logger.error("delivery outcome signal build failed: #{inspect(reason)}")
+    with {:ok, signal} <- Signal.new(attrs),
+         {:ok, _} <- Bus.publish(BullXGateway.SignalBus, [signal]) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -632,7 +650,7 @@ defmodule BullXGateway.ScopeWorker do
     %Delivery{
       id: dead_letter.dispatch_id,
       op: string_to_op(dead_letter.op),
-      channel: {adapter_atom, dead_letter.channel_tenant},
+      channel: {adapter_atom, dead_letter.channel_id},
       scope_id: dead_letter.scope_id,
       thread_id: dead_letter.thread_id,
       reply_to_external_id: payload["reply_to_external_id"],

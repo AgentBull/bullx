@@ -170,11 +170,11 @@ defmodule BullXGateway.ControlPlane.Store.Postgres do
 
   defp dead_letter_channel_filter(query, nil), do: query
 
-  defp dead_letter_channel_filter(query, {adapter, tenant}) do
+  defp dead_letter_channel_filter(query, {adapter, channel_id}) do
     adapter_string = to_adapter_string(adapter)
 
     from d in query,
-      where: d.channel_adapter == ^adapter_string and d.channel_tenant == ^tenant
+      where: d.channel_adapter == ^adapter_string and d.channel_id == ^channel_id
   end
 
   defp dead_letter_scope_filter(query, nil), do: query

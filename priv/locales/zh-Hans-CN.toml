@@ -1,0 +1,84 @@
+[__meta__]
+bcp47 = "zh-Hans-CN"
+fallback = "en-US"
+
+[app]
+close = "关闭"
+actions = "操作"
+
+[app.connectivity]
+client_lost_title = "无法连接到互联网"
+server_lost_title = "出错了"
+reconnecting = "正在重新连接"
+
+[errors.validation]
+required = "不能为空"
+cast = "格式不正确"
+format = "格式无效"
+inclusion = "无效"
+exclusion = "已被保留"
+subset = "包含无效项"
+confirmation = "与确认值不一致"
+acceptance = "必须接受"
+
+[errors.validation.length.string]
+min = '''
+.input {$count :integer}
+.match $count
+  * {{至少需要 {$count} 个字符}}
+'''
+max = '''
+.input {$count :integer}
+.match $count
+  * {{至多 {$count} 个字符}}
+'''
+is = '''
+.input {$count :integer}
+.match $count
+  * {{应为 {$count} 个字符}}
+'''
+
+[errors.validation.length.binary]
+min = '''
+.input {$count :integer}
+.match $count
+  * {{至少需要 {$count} 字节}}
+'''
+max = '''
+.input {$count :integer}
+.match $count
+  * {{至多 {$count} 字节}}
+'''
+is = '''
+.input {$count :integer}
+.match $count
+  * {{应为 {$count} 字节}}
+'''
+
+[errors.validation.length.collection]
+min = '''
+.input {$count :integer}
+.match $count
+  * {{至少需要 {$count} 项}}
+'''
+max = '''
+.input {$count :integer}
+.match $count
+  * {{至多 {$count} 项}}
+'''
+is = '''
+.input {$count :integer}
+.match $count
+  * {{应为 {$count} 项}}
+'''
+
+[errors.validation.number]
+less_than = "必须小于 {$number}"
+greater_than = "必须大于 {$number}"
+less_than_or_equal_to = "必须小于或等于 {$number}"
+greater_than_or_equal_to = "必须大于或等于 {$number}"
+equal_to = "必须等于 {$number}"
+not_equal_to = "必须不等于 {$number}"
+
+[users]
+greeting = "你好，{$name}！"

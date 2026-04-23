@@ -28,7 +28,7 @@ defmodule BullXGateway.Inputs do
 
   @type reply_channel :: %{
           required(:adapter) => atom(),
-          required(:tenant) => String.t(),
+          required(:channel_id) => String.t(),
           required(:scope_id) => String.t(),
           required(:thread_id) => String.t() | nil
         }

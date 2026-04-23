@@ -63,8 +63,8 @@ config :bullx, BullXWeb.Endpoint,
     patterns: [
       # Static assets, except user uploads
       ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
-      # Gettext translations
-      ~r"priv/gettext/.*\.po$",
+      # I18n translations
+      ~r"priv/locales/.*\.toml$",
       # Router, Controllers, LiveViews and LiveComponents
       ~r"lib/bullx_web/router\.ex$",
       ~r"lib/bullx_web/(controllers|live|components)/.*\.(ex|heex)$"

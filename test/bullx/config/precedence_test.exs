@@ -11,6 +11,7 @@ defmodule BullX.Config.PrecedenceTest do
   setup do
     cache_pid = GenServer.whereis(BullX.Config.Cache)
     Ecto.Adapters.SQL.Sandbox.allow(BullX.Repo, self(), cache_pid)
+    previous_test_integer = Application.get_env(:bullx, :test_integer)
 
     on_exit(fn ->
       System.delete_env(@env_integer)
@@ -19,6 +20,7 @@ defmodule BullX.Config.PrecedenceTest do
       BullX.Config.Cache.delete_raw(@db_key_integer)
       BullX.Config.Cache.delete_raw(@db_key_mode)
       BullX.Config.Cache.delete_raw(@db_key_custom)
+      restore_app_env(:test_integer, previous_test_integer)
     end)
 
     :ok
@@ -66,6 +68,20 @@ defmodule BullX.Config.PrecedenceTest do
     assert BullX.Config.TestSettings.test_integer!() == 10
   end
 
+  test "application config participates below database and OS env" do
+    Application.put_env(:bullx, :test_integer, 12)
+
+    assert BullX.Config.TestSettings.test_integer!() == 12
+
+    System.put_env(@env_integer, "13")
+    assert BullX.Config.TestSettings.test_integer!() == 13
+
+    insert_config!(@db_key_integer, "14")
+    BullX.Config.Cache.refresh(@db_key_integer)
+
+    assert BullX.Config.TestSettings.test_integer!() == 14
+  end
+
   test "Zoi-invalid database mode value falls back to env" do
     insert_config!(@db_key_mode, "turbo")
     BullX.Config.Cache.refresh(@db_key_mode)
@@ -96,4 +112,7 @@ defmodule BullX.Config.PrecedenceTest do
   defp insert_config!(key, value) do
     BullX.Repo.insert!(%BullX.Config.AppConfig{key: key, value: value})
   end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:bullx, key)
+  defp restore_app_env(key, value), do: Application.put_env(:bullx, key, value)
 end

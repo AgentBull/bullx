@@ -27,7 +27,8 @@ defmodule BullXWeb.CoreComponents do
 
   """
   use Phoenix.Component
-  use Gettext, backend: BullXWeb.Gettext
+
+  import BullXWeb.I18n.HTML, only: [t: 1]
 
   alias Phoenix.LiveView.JS
 
@@ -71,7 +72,7 @@ defmodule BullXWeb.CoreComponents do
           <p>{msg}</p>
         </div>
         <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
+        <button type="button" class="group self-start cursor-pointer" aria-label={t("app.close")}>
           <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
         </button>
       </div>
@@ -365,7 +366,7 @@ defmodule BullXWeb.CoreComponents do
         <tr>
           <th :for={col <- @col}>{col[:label]}</th>
           <th :if={@action != []}>
-            <span class="sr-only">{gettext("Actions")}</span>
+            <span class="sr-only">{t("app.actions")}</span>
           </th>
         </tr>
       </thead>
@@ -469,24 +470,12 @@ defmodule BullXWeb.CoreComponents do
   end
 
   @doc """
-  Translates an error message using gettext.
+  Translates an Ecto changeset error through `BullX.I18n`.
+
+  Delegates to `BullXWeb.I18n.ErrorTranslator`; see RFC 0007 §8.2.
   """
   def translate_error({msg, opts}) do
-    # When using gettext, we typically pass the strings we want
-    # to translate as a static argument:
-    #
-    #     # Translate the number of files with plural rules
-    #     dngettext("errors", "1 file", "%{count} files", count)
-    #
-    # However the error messages in our forms and APIs are generated
-    # dynamically, so we need to translate them by calling Gettext
-    # with our gettext backend as first argument. Translations are
-    # available in the errors.po file (as we use the "errors" domain).
-    if count = opts[:count] do
-      Gettext.dngettext(BullXWeb.Gettext, "errors", msg, msg, count, opts)
-    else
-      Gettext.dgettext(BullXWeb.Gettext, "errors", msg, opts)
-    end
+    BullXWeb.I18n.ErrorTranslator.translate_error({msg, opts})
   end
 
   @doc """

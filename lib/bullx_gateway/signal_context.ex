@@ -82,10 +82,10 @@ defmodule BullXGateway.SignalContext do
   defp event_type("trigger"), do: {:ok, :trigger}
   defp event_type(other), do: {:error, {:invalid_event_type, other}}
 
-  defp channel(%{"bullx_channel_adapter" => adapter, "bullx_channel_tenant" => tenant})
-       when is_binary(tenant) do
+  defp channel(%{"bullx_channel_adapter" => adapter, "bullx_channel_id" => channel_id})
+       when is_binary(channel_id) do
     with {:ok, adapter_atom} <- adapter_atom(adapter) do
-      {:ok, {adapter_atom, tenant}}
+      {:ok, {adapter_atom, channel_id}}
     end
   end
 

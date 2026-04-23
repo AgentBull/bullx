@@ -14,8 +14,8 @@ The resulting system must be usable from any part of BullX: `BullXWeb`, `Gateway
 
 The system introduced by this RFC must satisfy the following runtime properties:
 
-- Values resolve in this order: **PostgreSQL override -> OS environment -> default**.
-- Invalid higher-priority values are **skipped**, not fatal: if a database value cannot be cast **or fails its declared Zoi constraint**, BullX falls back to the OS environment; if the OS environment value is also invalid or absent, BullX falls back to the default.
+- Values resolve in this order: **PostgreSQL override -> OS environment -> application config -> default**.
+- Invalid higher-priority values are **skipped**, not fatal: if a database value cannot be cast **or fails its declared Zoi constraint**, BullX falls back to the OS environment; if the OS environment value is also invalid or absent, BullX falls back to application config and then the default.
 - Reads are served from **ETS-backed cache**, not direct database queries.
 - Writes explicitly refresh the cache; **PostgreSQL `LISTEN/NOTIFY` is not used**.
 - `.env` files are supported for bootstrapping the OS environment layer without changing the priority model above.
@@ -108,13 +108,14 @@ For all runtime dynamic variables declared through the new `BullX.Config` DSL, t
 
 1. `app_configs` row in PostgreSQL, cached in ETS
 2. OS environment variable
-3. default declared in code
+3. application config (`config :bullx, ...`) for boot/static values
+4. default declared in code
 
-There is **no** application-config fallback layer in between. BullX must not silently reintroduce Phoenix compile-time config as an extra priority level for runtime dynamic variables.
+The application-config layer is intentionally below database and OS environment. It exists for boot/static values that are naturally expressed as Elixir terms, such as module lists or adapter child specs. Operator-editable scalar settings should still prefer the database/OS layers.
 
 Concretely, the new DSL must generate declarations with:
 
-- `binding_order: [BullX.Config.DatabaseBinding, BullX.Config.SystemBinding]`
+- `binding_order: [BullX.Config.DatabaseBinding, BullX.Config.SystemBinding, BullX.Config.ApplicationBinding]`
 - `binding_skip: [:system, :config]`
 - `cached: false`
 
@@ -122,7 +123,8 @@ These defaults are deliberate:
 
 - `BullX.Config.DatabaseBinding` makes PostgreSQL the highest-priority runtime source.
 - `BullX.Config.SystemBinding` replaces Skogsra's built-in `:system` binding so BullX can skip invalid environment values instead of treating them as terminal failures.
-- `binding_skip: [:system, :config]` removes Skogsra's built-in `:system` and `:config` layers to preserve the exact 3-level model.
+- `BullX.Config.ApplicationBinding` replaces Skogsra's built-in `:config` binding so BullX can validate and skip invalid app-config values consistently.
+- `binding_skip: [:system, :config]` removes Skogsra's built-in `:system` and `:config` layers so only BullX-owned bindings participate.
 - `cached: false` disables Skogsra's `:persistent_term` cache for runtime dynamic variables because BullX's authoritative hot-reload cache is ETS.
 
 ### 3.4 Validation model: cast first, then Zoi
@@ -163,15 +165,17 @@ This distinction matters:
 
 ### 3.5 Why BullX needs custom Skogsra bindings
 
-Skogsra's extension point for custom resolution order is `Skogsra.Binding`, not a custom "provider" behaviour. This RFC therefore uses two BullX-specific bindings:
+Skogsra's extension point for custom resolution order is `Skogsra.Binding`, not a custom "provider" behaviour. This RFC therefore uses three BullX-specific bindings:
 
 - `BullX.Config.DatabaseBinding`
 - `BullX.Config.SystemBinding`
+- `BullX.Config.ApplicationBinding`
 
 Both bindings must return **raw source values**, not typed values:
 
 - Database binding reads the raw string from ETS and returns that raw string to Skogsra.
 - System binding constructs the OS env var name via `Skogsra.Env.gen_namespace/gen_app_name/gen_keys` (because `os_env/1` only generates a name when `:system` appears in `binding_order`) and reads it with `System.get_env/1`, then returns that raw string to Skogsra.
+- Application binding reads `Application.get_env/2` through the declared key path and returns that value to Skogsra.
 
 When a setting declares `zoi:`, the binding may perform a provisional `Skogsra.Type.cast(env, raw)` only so the candidate can be validated before resolution continues. The binding must **not** return the casted value, because `Skogsra.Binding` applies the authoritative cast after the binding returns. If the provisional cast or Zoi validation fails, the binding returns `nil` (the Skogsra convention for "not found, try next binding") so Skogsra continues to the next binding or the default. This is the mechanism that makes "invalid value -> skip -> fallback" deterministic for both database and OS environment inputs without breaking custom Skogsra types.
 
@@ -197,6 +201,7 @@ This preserves the runtime model:
 
 - database
 - OS environment
+- application config
 - default
 
 while still supporting `.env`, `.env.local`, `.env.dev`, `.env.test`, and `.env.prod`.
@@ -215,8 +220,8 @@ At the bootstrap phase, the same dotenv load order is also used by the shared co
 - Add a config-script helper under `config/support/` for dotenv loading and typed bootstrap env parsing.
 - Add Zoi-backed value constraints for both runtime dynamic settings and bootstrap env parsing.
 - Add test coverage for:
-  - database > env > default precedence
-  - invalid database value falling back to env/default
+  - database > env > application config > default precedence
+  - invalid database value falling back to env/application config/default
   - invalid environment value falling back to default
   - Zoi-invalid database or env values falling back correctly for runtime dynamic settings
   - explicit cache refresh on write/delete
@@ -257,6 +262,7 @@ lib/bullx/
 ├── config.ex                             (NEW — shared DSL + facade)
 └── config/
     ├── app_config.ex                     (NEW — Ecto schema)
+    ├── application_binding.ex            (NEW — application config Skogsra binding)
     ├── cache.ex                          (NEW — ETS-backed cache process)
     ├── database_binding.ex               (NEW — PostgreSQL/ETS Skogsra binding)
     ├── secrets.ex                        (NEW — bootstrap-only declarations in the shared DSL)
@@ -321,7 +327,8 @@ defmodule BullX.Config do
   Global runtime configuration infrastructure shared by all BullX modules.
 
   Runtime settings declared through this namespace resolve in the following
-  order: PostgreSQL override, OS environment, then code default.
+  order: PostgreSQL override, OS environment, application config, then code
+  default.
   """
 
   defmacro __using__(_opts) do
@@ -337,7 +344,11 @@ defmodule BullX.Config do
     merged_opts =
       Keyword.merge(
         [
-          binding_order: [BullX.Config.DatabaseBinding, BullX.Config.SystemBinding],
+          binding_order: [
+            BullX.Config.DatabaseBinding,
+            BullX.Config.SystemBinding,
+            BullX.Config.ApplicationBinding
+          ],
           binding_skip: [:system, :config],
           cached: false
         ],
@@ -431,6 +442,7 @@ Its presence is deliberate even with a single child, because configuration is gl
 
 - `BullX.Config.DatabaseBinding`
 - `BullX.Config.SystemBinding`
+- `BullX.Config.ApplicationBinding`
 - `BullX.Config.Bootstrap`
 
 Required responsibilities:
@@ -507,7 +519,7 @@ Implementation notes:
 - Reads must never hit the database directly.
 - Because the ETS table is `:protected`, only the owning `Cache` process may write to it. `refresh/1` and `refresh_all/0` must be implemented as `GenServer.call/2` so that callers can rely on the refresh having completed before the call returns.
 - `get_raw/1` must return `:error` rather than raising if the ETS table does not yet exist (for example during the window between a `Cache` crash and its restart). Concretely, wrap the `:ets.lookup` call in a `try/rescue` that catches `ArgumentError` and returns `:error`.
-- If the database query in `init/1` fails — for example because the `app_configs` table does not yet exist when the application starts before migrations have run — the cache must log a warning and start with an empty ETS table rather than crashing. In the degraded state the database source is silently absent; every variable resolves through OS environment and then its code default until the application is restarted after a successful migration.
+- If the database query in `init/1` fails — for example because the `app_configs` table does not yet exist when the application starts before migrations have run — the cache must log a warning and start with an empty ETS table rather than crashing. In the degraded state the database source is silently absent; every variable resolves through OS environment, application config, and then its code default until the application is restarted after a successful migration.
 
 ### 7.7 `BullX.Config.DatabaseBinding`
 
@@ -583,7 +595,20 @@ This module is what makes these runtime flows valid:
 
 Without this custom binding, BullX cannot guarantee the "skip invalid value and continue" requirement.
 
-### 7.9 `BullX.Config.Writer`
+### 7.9 `BullX.Config.ApplicationBinding`
+
+`lib/bullx/config/application_binding.ex` implements `Skogsra.Binding` for boot/static values stored in application config.
+
+Responsibilities:
+
+- follow the declared Skogsra key path against `Application.fetch_env/2`,
+- support nested keyword-list and map paths,
+- validate candidate values through `BullX.Config.Validation.validate_runtime_raw/2`,
+- return `nil` instead of terminally failing when the configured value is malformed.
+
+This binding is what lets domain-specific modules such as `BullX.Config.Gateway` expose complex static values without direct `Application.get_env/2` calls in subsystem code.
+
+### 7.10 `BullX.Config.Writer`
 
 `lib/bullx/config/writer.ex` is the only supported write path for persisted config.
 
@@ -898,7 +923,7 @@ The executing agent must preserve these invariants:
 - `BullX.Config` is root-level shared infrastructure
 - the existing `config/*.exs` files remain the bootstrap branch of that infrastructure
 - bootstrap settings are configured before Repo start and do not depend on PostgreSQL-backed config
-- runtime dynamic settings resolve in exactly this order: database, OS env, default
+- runtime dynamic settings resolve in exactly this order: database, OS env, application config, default
 - runtime dynamic settings may additionally constrain legal values with Zoi after type casting
 - runtime dynamic config reads are served from ETS
 - write-path refresh is explicit and local to the node; multi-node deployments are not supported and `BullX.Config.put/2` makes no guarantees about other nodes

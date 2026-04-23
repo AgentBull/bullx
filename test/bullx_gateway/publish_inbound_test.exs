@@ -39,7 +39,7 @@ defmodule BullXGateway.PublishInboundTest do
     @behaviour BullXGateway.Gating
 
     @impl true
-    def check(%BullXGateway.SignalContext{channel: {:github, _tenant}}, _opts), do: :allow
+    def check(%BullXGateway.SignalContext{channel: {:github, _channel_id}}, _opts), do: :allow
     def check(_ctx, _opts), do: {:deny, :wrong_channel, "expected github atom channel"}
   end
 
@@ -91,11 +91,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "publishes an inbound trigger, dedupes repeats after Bus.publish succeeds" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-1")
+    input = trigger_input(channel_id, "evt-1")
 
     assert {:ok, :published} = Gateway.publish_inbound(input)
     assert_receive {:signal, signal}, 500
@@ -110,11 +110,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "expired dedupe row allows the same source/id to publish again" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-ttl")
+    input = trigger_input(channel_id, "evt-ttl")
 
     assert {:ok, :published} = Gateway.publish_inbound(input)
     assert_receive {:signal, _signal}, 500
@@ -135,11 +135,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "gating fallback flags and moderation modifications are reflected in the published signal" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-policy")
+    input = trigger_input(channel_id, "evt-policy")
 
     opts = [
       gating: [gaters: [ExplodingGater]],
@@ -161,11 +161,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "security denials stop the signal before publish" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-security")
+    input = trigger_input(channel_id, "evt-security")
 
     assert {:error, {:security_denied, :verify, :forbidden, "blocked"}} =
              Gateway.publish_inbound(input, security: [adapter: DenySecurity])
@@ -174,17 +174,17 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "dedupe TTL is read per-adapter from AdapterRegistry" do
-    short_tenant = unique_tenant()
-    long_tenant = unique_tenant()
+    short_channel_id = unique_channel_id()
+    long_channel_id = unique_channel_id()
     short_ttl = 50
     long_ttl = 86_400_000
 
-    register_adapter({:github, short_tenant}, short_ttl)
-    register_adapter({:github, long_tenant}, long_ttl)
+    register_adapter({:github, short_channel_id}, short_ttl)
+    register_adapter({:github, long_channel_id}, long_ttl)
     subscribe_inbound!()
 
-    short_input = trigger_input(short_tenant, "evt-ttl-short")
-    long_input = trigger_input(long_tenant, "evt-ttl-long")
+    short_input = trigger_input(short_channel_id, "evt-ttl-short")
+    long_input = trigger_input(long_channel_id, "evt-ttl-long")
 
     assert {:ok, :published} = Gateway.publish_inbound(short_input)
     assert {:ok, :published} = Gateway.publish_inbound(long_input)
@@ -202,11 +202,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "gater :deny halts the pipeline and leaves no dedupe record" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-gater-deny")
+    input = trigger_input(channel_id, "evt-gater-deny")
 
     assert {:error, {:policy_denied, :gating, :not_allowed, "blocked by gater"}} =
              Gateway.publish_inbound(input, gating: [gaters: [DenyGater]])
@@ -222,11 +222,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "gaters can match SignalContext.channel as an atom tuple" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-atom-channel")
+    input = trigger_input(channel_id, "evt-atom-channel")
 
     assert {:ok, :published} =
              Gateway.publish_inbound(input, gating: [gaters: [AtomChannelGater]])
@@ -236,11 +236,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "moderator :reject halts the pipeline" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-moderator-reject")
+    input = trigger_input(channel_id, "evt-moderator-reject")
 
     assert {:error, {:policy_denied, :moderation, :bad_content, "blocked by moderator"}} =
              Gateway.publish_inbound(input, moderation: [moderators: [RejectModerator]])
@@ -249,11 +249,11 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "moderator :flag accumulates into bullx_flags without halting" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
-    input = trigger_input(tenant, "evt-moderator-flag")
+    input = trigger_input(channel_id, "evt-moderator-flag")
 
     assert {:ok, :published} =
              Gateway.publish_inbound(input, moderation: [moderators: [FlagModerator]])
@@ -270,8 +270,8 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "security denial yields policy_outcome :denied_security on publish_inbound:stop" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
     subscribe_inbound!()
 
     handler_id = "test-publish-stop-denied-#{System.unique_integer([:positive])}"
@@ -286,7 +286,7 @@ defmodule BullXGateway.PublishInboundTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    input = trigger_input(tenant, "evt-short-circuit")
+    input = trigger_input(channel_id, "evt-short-circuit")
 
     assert {:error, {:security_denied, :verify, :forbidden, "blocked"}} =
              Gateway.publish_inbound(input,
@@ -298,8 +298,8 @@ defmodule BullXGateway.PublishInboundTest do
   end
 
   test "telemetry spans use the RFC namespace" do
-    tenant = unique_tenant()
-    register_adapter({:github, tenant}, 86_400_000)
+    channel_id = unique_channel_id()
+    register_adapter({:github, channel_id}, 86_400_000)
 
     handler_id = "test-publish-stop-#{System.unique_integer([:positive])}"
     test_pid = self()
@@ -316,7 +316,7 @@ defmodule BullXGateway.PublishInboundTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     assert {:ok, :published} =
-             Gateway.publish_inbound(trigger_input(tenant, "evt-telemetry-stop"))
+             Gateway.publish_inbound(trigger_input(channel_id, "evt-telemetry-stop"))
 
     assert_receive {:publish_stop, %{policy_outcome: :published}}, 500
   end
@@ -336,11 +336,11 @@ defmodule BullXGateway.PublishInboundTest do
     on_exit(fn -> Bus.unsubscribe(BullXGateway.SignalBus, subscription_id) end)
   end
 
-  defp trigger_input(tenant, event_id) do
+  defp trigger_input(channel_id, event_id) do
     %Trigger{
       id: event_id,
-      source: "bullx://gateway/github/#{tenant}",
-      channel: {:github, tenant},
+      source: "bullx://gateway/github/#{channel_id}",
+      channel: {:github, channel_id},
       scope_id: "bullx/example",
       thread_id: nil,
       actor: %{
@@ -362,7 +362,7 @@ defmodule BullXGateway.PublishInboundTest do
     }
   end
 
-  defp unique_tenant do
-    "tenant_#{System.unique_integer([:positive])}"
+  defp unique_channel_id do
+    "channel_#{System.unique_integer([:positive])}"
   end
 end

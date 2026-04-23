@@ -20,6 +20,7 @@ defmodule BullXGateway do
   alias BullXGateway.Security
   alias BullXGateway.SignalContext
   alias BullXGateway.Signals.InboundReceived
+  alias BullX.Config.Gateway, as: GatewayConfig
   alias Jido.Signal
   alias Jido.Signal.Bus
 
@@ -51,7 +52,7 @@ defmodule BullXGateway do
   end
 
   defp do_publish_inbound(input, opts) do
-    gateway_config = Application.get_env(:bullx, __MODULE__, [])
+    gateway_config = GatewayConfig.config()
 
     policy_timeout_fallback =
       Keyword.get(
@@ -250,6 +251,8 @@ defmodule BullXGateway do
           {:invalid_delivery, term()}
           | {:unknown_channel, Delivery.channel()}
           | {:security_denied, :sanitize, atom(), String.t()}
+          | {:store_unavailable, term()}
+          | {:bus_publish_failed, term()}
           | {:enqueue_failed, term()}
 
   @spec deliver(Delivery.t() | term(), keyword()) ::
@@ -296,7 +299,7 @@ defmodule BullXGateway do
   end
 
   defp do_deliver(delivery, opts) do
-    gateway_config = Application.get_env(:bullx, __MODULE__, [])
+    gateway_config = GatewayConfig.config()
 
     policy_timeout_fallback =
       Keyword.get(
@@ -335,8 +338,10 @@ defmodule BullXGateway do
       end
     else
       {:capability_unsupported, reason} ->
-        publish_unsupported_failure(delivery, reason)
-        {:ok, delivery.id}
+        case publish_unsupported_failure(delivery, reason) do
+          :ok -> {:ok, delivery.id}
+          {:error, _} = error -> error
+        end
 
       {:error, _} = error ->
         error
@@ -394,26 +399,29 @@ defmodule BullXGateway do
     }
 
     outcome = Outcome.new_failure(delivery.id, error_map)
-    publish_delivery_signal(delivery, outcome)
 
     now = DateTime.utc_now()
 
-    _ =
-      ControlPlane.put_dead_letter(%{
-        dispatch_id: delivery.id,
-        op: Atom.to_string(delivery.op),
-        channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
-        channel_tenant: elem(delivery.channel, 1),
-        scope_id: delivery.scope_id,
-        thread_id: delivery.thread_id,
-        caused_by_signal_id: delivery.caused_by_signal_id,
-        payload: ScopeWorker.encode_delivery_payload(delivery),
-        final_error: error_map,
-        attempts_total: 0,
-        dead_lettered_at: now
-      })
-
-    :ok
+    with :ok <-
+           ControlPlane.put_dead_letter(%{
+             dispatch_id: delivery.id,
+             op: Atom.to_string(delivery.op),
+             channel_adapter: Atom.to_string(elem(delivery.channel, 0)),
+             channel_id: elem(delivery.channel, 1),
+             scope_id: delivery.scope_id,
+             thread_id: delivery.thread_id,
+             caused_by_signal_id: delivery.caused_by_signal_id,
+             payload: ScopeWorker.encode_delivery_payload(delivery),
+             final_error: error_map,
+             attempts_total: 0,
+             dead_lettered_at: now
+           }),
+         :ok <- publish_delivery_signal(delivery, outcome) do
+      :ok
+    else
+      {:error, {:bus_publish_failed, _}} = error -> error
+      {:error, reason} -> {:error, {:store_unavailable, reason}}
+    end
   end
 
   defp publish_duplicate_success(delivery, %Outcome{} = cached_outcome) do
@@ -422,7 +430,7 @@ defmodule BullXGateway do
   end
 
   defp publish_delivery_signal(delivery, %Outcome{} = outcome) do
-    {adapter, tenant} = delivery.channel
+    {adapter, channel_id} = delivery.channel
 
     type =
       case outcome.status do
@@ -435,7 +443,7 @@ defmodule BullXGateway do
     extensions =
       %{
         "bullx_channel_adapter" => Atom.to_string(adapter),
-        "bullx_channel_tenant" => tenant
+        "bullx_channel_id" => channel_id
       }
 
     extensions =
@@ -444,18 +452,22 @@ defmodule BullXGateway do
         id -> Map.put(extensions, "bullx_caused_by", id)
       end
 
-    case Signal.new(%{
-           id: Signal.ID.generate!(),
-           source: "bullx://gateway/#{adapter}/#{tenant}",
-           type: type,
-           subject: subject,
-           time: DateTime.to_iso8601(DateTime.utc_now()),
-           datacontenttype: "application/json",
-           data: Outcome.to_signal_data(outcome),
-           extensions: extensions
-         }) do
-      {:ok, signal} -> Bus.publish(BullXGateway.SignalBus, [signal])
-      {:error, _} = error -> error
+    attrs = %{
+      id: Signal.ID.generate!(),
+      source: "bullx://gateway/#{adapter}/#{channel_id}",
+      type: type,
+      subject: subject,
+      time: DateTime.to_iso8601(DateTime.utc_now()),
+      datacontenttype: "application/json",
+      data: Outcome.to_signal_data(outcome),
+      extensions: extensions
+    }
+
+    with {:ok, signal} <- Signal.new(attrs),
+         {:ok, _} <- Bus.publish(BullXGateway.SignalBus, [signal]) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:bus_publish_failed, reason}}
     end
   end
 

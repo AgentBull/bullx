@@ -54,7 +54,7 @@ The egress half is summarised at the boundary (see RFC 0003) and only as much as
 2. Provides `BullX.Gateway.publish_inbound/1`: an adapter constructs one of the seven `BullXGateway.Inputs.*` canonical structs, hands it to Gateway, Gateway renders it into a `%Jido.Signal{}` and publishes.
 3. Provides `BullX.Gateway.deliver/1` and `BullX.Gateway.cancel_stream/1` — full semantics in RFC 0003.
 4. Provides DLQ ops API `list_dead_letters/1` / `replay_dead_letter/1` — full semantics in RFC 0003.
-5. Maintains `AdapterRegistry`, mapping `{adapter, tenant}` to an adapter module, config, and retry policy.
+5. Maintains `AdapterRegistry`, mapping `{adapter, channel_id}` to an adapter module, config, and retry policy.
 6. **ControlPlane**: durable writes to `gateway_dedupe_seen` (UNLOGGED, this RFC) and `gateway_dead_letters` (UNLOGGED, RFC 0003). These are the only two Gateway tables.
 7. Maintains per-scope `ScopeWorker` processes for outbound serialization (RFC 0003).
 8. Performs `(source, id)` inbound dedupe (ETS hot cache + `gateway_dedupe_seen` UNLOGGED backing, per-adapter TTL).
@@ -182,7 +182,7 @@ Other stable inbound fields (full shape in §4.6 / §4.7):
 - `duplex` — boolean, derived from `event.type` (six chat-style types are `true`, `trigger` is `false`).
 - `actor` — `%{id, display, bot}`; all three required. Runtime maps `actor.id` to any BullX-user-system identity when needed.
 - `refs` — list of stable anchors `[%{kind, id, url?}]`, defaults to `[]`.
-- `reply_channel` — only present when `duplex = true`: `%{adapter, tenant, scope_id, thread_id?}`. Omitted (or `nil`) when `duplex = false`.
+- `reply_channel` — only present when `duplex = true`: `%{adapter, channel_id, scope_id, thread_id?}`. Omitted (or `nil`) when `duplex = false`.
 - Type-specific fields (§4.3).
 
 `BullXGateway.Inputs.*` are internal Elixir structs the adapter passes to Gateway; they may use atom keys. When rendering the `%Jido.Signal{}`, Gateway must canonicalize:
@@ -261,7 +261,7 @@ The `Deduper`'s ETS hot cache is a performance optimization. The authoritative s
   data: %{...},                       # see §4.6
   extensions: %{
     "bullx_channel_adapter" => "feishu",          # required
-    "bullx_channel_tenant"  => "default",         # required
+    "bullx_channel_id"      => "default",         # required
     "bullx_caused_by"       => "<source inbound id>"  # optional (delivery.* often present, inbound rarely)
     # Optional policy pipeline extension keys (§6.8):
     # "bullx_security"             => %{...}
@@ -331,7 +331,7 @@ All inbound events share this single carrier. `data.event.type` determines the t
 
     "reply_channel" => %{
       "adapter" => "feishu",
-      "tenant"  => "default",
+      "channel_id" => "default",
       "scope_id" => "oc_xxx",
       "thread_id" => nil
     }
@@ -339,7 +339,7 @@ All inbound events share this single carrier. `data.event.type` determines the t
   },
   extensions: %{
     "bullx_channel_adapter" => "feishu",
-    "bullx_channel_tenant"  => "default"
+    "bullx_channel_id"      => "default"
   }
 }
 ```
@@ -411,7 +411,7 @@ Notes:
   },
   extensions: %{
     "bullx_channel_adapter" => "github",
-    "bullx_channel_tenant"  => "default"
+    "bullx_channel_id"      => "default"
   }
 }
 ```
@@ -449,7 +449,7 @@ data: %{
   "emoji"  => "THUMBSUP",
   "action" => "added",                                       # "added" | "removed"
 
-  "reply_channel" => %{"adapter" => "feishu", "tenant" => "default", "scope_id" => "oc_xxx", "thread_id" => nil}
+  "reply_channel" => %{"adapter" => "feishu", "channel_id" => "default", "scope_id" => "oc_xxx", "thread_id" => nil}
 }
 ```
 
@@ -592,7 +592,7 @@ Examples: `feishu:oc_xxx`, `feishu:oc_xxx:topic_12`, `github:acme/api`.
 ```elixir
 %{
   "bullx_channel_adapter" => "feishu" | "github" | "slack" | ...,  # required
-  "bullx_channel_tenant"  => "default",                             # required
+  "bullx_channel_id"      => "default",                             # required
   "bullx_caused_by"       => "<source inbound signal id>"           # optional (delivery.* often)
 }
 ```
@@ -642,7 +642,7 @@ The Gateway defines exactly **three** typed signal modules, each with `new/1` an
 
 1. **Top level:** `type` is exactly `"com.agentbull.x.inbound.received"`; `source`, `id`, `time` are non-empty; `specversion = "1.0.2"`.
 2. **JSON projection:** `data` and `extensions` are string-key JSON-neutral maps.
-3. **Extensions provenance:** `bullx_channel_adapter` and `bullx_channel_tenant` exist and are non-empty; optional keys are validated when present.
+3. **Extensions provenance:** `bullx_channel_adapter` and `bullx_channel_id` exist and are non-empty; optional keys are validated when present.
 4. **Event projection:** `data.event` is `%{"type" => _, "name" => _, "version" => _, "data" => _}` where:
    - `data.event.type` is one of the seven allowed values.
    - `data.event.name` is a non-empty string (the value is not checked against any whitelist).
@@ -659,7 +659,7 @@ The Gateway defines exactly **three** typed signal modules, each with `new/1` an
    - **`data.thread_id`** is a required key whose value may be `nil` or a non-empty string. All semantic types must include the key; the value is adapter-decided.
    - `data.actor` is exactly `%{"id" => non_empty_string, "display" => non_empty_string, "bot" => bool}`. The non-empty `display` is a hard contract because it is the only actor field surfaced to LLM / operator-facing text (default templates, rendered `content`).
    - `data.refs` is a list of `%{"kind" => _, "id" => _, "url" => _ | nil}`; defaults to `[]`.
-   - When `duplex = true`, `data.reply_channel` is required: `%{"adapter" => _, "tenant" => _, "scope_id" => _, "thread_id" => _ | nil}`. Its `scope_id` / `thread_id` should match the top-level `data.scope_id` / `data.thread_id` (redundant but lets Runtime build a Delivery without crossing fields).
+   - When `duplex = true`, `data.reply_channel` is required: `%{"adapter" => _, "channel_id" => _, "scope_id" => _, "thread_id" => _ | nil}`. Its `scope_id` / `thread_id` should match the top-level `data.scope_id` / `data.thread_id` (redundant but lets Runtime build a Delivery without crossing fields).
    - When `duplex = false`, `data.reply_channel` is omitted or `nil`; the top-level `data.scope_id` / `data.thread_id` are still required.
 7. **Type-specific:** see §4.3 struct fields. For example, `Reaction` requires `target_external_message_id`, `emoji`, `action ∈ {"added", "removed"}`; `MessageEdited` requires `target_external_message_id`; `Action` requires `target_external_message_id` and `action_id`; etc.
 
@@ -715,19 +715,21 @@ This is only the minimum delivery contract; it is not a unified media cache. Ada
 
 ### 6.1 Channel identity and registration
 
-**A channel is identified by `{adapter_atom, tenant_string}`.**
+**A channel is identified by `{adapter_atom, channel_id_string}`.** `channel_id` is the per-binding string that distinguishes different logical channels sharing the same adapter module. The concept exists so a single adapter type can serve multiple concrete external sources in the same node — e.g. one `:github` adapter module bound once per repository, one `:slack` or `:feishu` adapter bound once per external workspace — each registered under a distinct `channel_id` with its own config, credentials, and retry policy.
 
-Examples: `{:feishu, "default"}`, `{:feishu, "tenant_a"}`, `{:github, "default"}`.
+Examples: `{:feishu, "default"}`, `{:feishu, "acme_workspace"}`, `{:github, "acme/api"}`, `{:github, "acme/web"}`.
 
-Adapter modules do not declare channels statically via `channel/0`; the tenant is per-instance configuration, not a module-level static attribute:
+Adapter modules do not declare channels statically via `channel/0`; the `channel_id` is per-instance configuration, not a module-level static attribute. Runtime code should normally start a channel through `BullXGateway.AdapterSupervisor.start_channel/3`, which owns the adapter subtree lifecycle, registers the channel, and stores the channel-supervisor pid as `config.anchor_pid` for `ScopeWorker` monitoring:
 
 ```elixir
-BullXGateway.AdapterRegistry.register(
+BullXGateway.AdapterSupervisor.start_channel(
   {:feishu, "default"},
   BullXGateway.Adapters.Feishu,
   config
 )
 ```
+
+`BullXGateway.AdapterRegistry.register/3` remains a narrow registry API for tests and manually supervised adapters. It does not start adapter children and does not synthesize `anchor_pid`.
 
 `config` shape (Gateway-shared metadata + adapter-specific fields):
 
@@ -844,7 +846,7 @@ An adapter listener constructs one of seven canonical structs and hands it to Ga
   source: String.t(),                   # adapter instance URI
   subject: String.t() | nil,            # optional; Gateway derives "<adapter>:<scope>[:<thread>]" if omitted
   time: DateTime.t() | nil,             # optional; Gateway writes utc_now if omitted
-  channel: BullX.Delivery.channel(),    # {adapter, tenant}
+  channel: BullX.Delivery.channel(),    # {adapter, channel_id}
   scope_id: String.t(),
   thread_id: String.t() | nil,
   actor: %{
@@ -861,7 +863,7 @@ An adapter listener constructs one of seven canonical structs and hands it to Ga
   },
   reply_channel: %{                     # only for duplex = true types
     adapter: atom(),
-    tenant: String.t(),
+    channel_id: String.t(),
     scope_id: String.t(),
     thread_id: String.t() | nil
   } | nil
@@ -1192,7 +1194,7 @@ The egress steps run inside RFC 0003's `Dispatcher` / `ScopeWorker`. The ScopeWo
 #### 6.8.4 Configuration
 
 ```elixir
-config :bullx, BullXGateway,
+config :bullx, :gateway,
   gating: [
     gaters: [MyApp.TenantAllowlist, MyApp.RateLimit],
     gating_opts: [tenant_file: "priv/tenants.json"],
@@ -1213,7 +1215,7 @@ config :bullx, BullXGateway,
   policy_error_fallback: :deny
 ```
 
-Resolution priority (low to high): Gateway defaults (empty) -> app config -> per-call override (`publish_inbound(input, gating: [...])`).
+Gateway reads these settings through `BullX.Config.Gateway`, not direct `Application.get_env/2` calls. Resolution priority for a Gateway setting is: code default -> application config -> OS env -> PostgreSQL override; per-call override (`publish_inbound(input, gating: [...])`) remains highest for that one call.
 
 **Ordering within a stage:** list order is execution order; the first `:deny` short-circuits; moderator `:modify` cascades; `:flag` accumulates; `:reject` short-circuits.
 
@@ -1281,10 +1283,12 @@ BullXGateway.CoreSupervisor
 └── BullXGateway.Telemetry
 
 BullXGateway.AdapterSupervisor           # attached by the application
-└── per-channel adapter subtrees          # adapter.child_specs/2 returns the spec list
+├── Registry                              # channel -> per-channel supervisor pid
+└── DynamicSupervisor
+    └── per-channel adapter supervisors   # each wraps adapter.child_specs/2
 ```
 
-Children that this RFC implements: `ControlPlane`, `SignalBus`, `AdapterRegistry`, `Deduper`, `Retention`, `Telemetry`, and `AdapterSupervisor` (as the empty supervisor whose children are attached when the application starts adapters).
+Children that this RFC implements: `ControlPlane`, `SignalBus`, `AdapterRegistry`, `Deduper`, `Retention`, `Telemetry`, and `AdapterSupervisor`. `AdapterSupervisor` owns the per-channel lifecycle but does not implement any concrete adapter.
 
 Children supervised by `CoreSupervisor` but **implemented by RFC 0003**: `Dispatcher`, `ScopeRegistry`, `OutboundDeduper`, `DLQ.ReplaySupervisor`. They appear in the tree shape so the supervisor child list is complete and stable across both RFCs; their internal modules and behaviour are defined in RFC 0003.
 
@@ -1520,7 +1524,7 @@ A coding agent has completed this RFC when all of the following hold. The number
 
 ### 11.1 Content + event contract
 
-1. Any `com.agentbull.x.inbound.received` signal's `data` contains a non-empty `content` list, an `event.{type, name, version, data}` map, a `duplex` boolean, an `actor.{id, display, bot}` triple, and a `refs` list (possibly empty); when `duplex = true`, `reply_channel.{adapter, tenant, scope_id, thread_id?}` is also present.
+1. Any `com.agentbull.x.inbound.received` signal's `data` contains a non-empty `content` list, an `event.{type, name, version, data}` map, a `duplex` boolean, an `actor.{id, display, bot}` triple, and a `refs` list (possibly empty); when `duplex = true`, `reply_channel.{adapter, channel_id, scope_id, thread_id?}` is also present.
 2. `data.event.type` is one of the seven enum values (`message` / `message_edited` / `message_recalled` / `reaction` / `action` / `slash_command` / `trigger`).
 3. `data.duplex` is derived from `event.type`: six chat types `true`, `trigger` `false`.
 4. `BullXGateway.Inputs.*` structs may use atom-key maps / atom kinds; the final `%Jido.Signal{}`'s `data` and `extensions` must be string-key JSON-neutral maps.
@@ -1577,7 +1581,7 @@ A coding agent has completed this RFC when all of the following hold. The number
 30. `Security.sanitize_outbound` (RFC 0003) stripping URLs -> the adapter receives the sanitized delivery, and `delivery.succeeded` reflects the sanitized content.
 31. Pipeline ordering: the `publish_inbound:stop` event for a Security-denied input has `policy_outcome: :denied_security`.
 32. Dedupe fidelity: a Security-denied event re-arriving with the same id is still security-denied (not a duplicate); after a successful publish, the same id is `:duplicate`.
-33. Zero defaults: with no `:bullx, BullXGateway` config, every Input passes through unchanged (no flag, no modify).
+33. Zero defaults: with no `:bullx, :gateway` config, every Input passes through unchanged (no flag, no modify).
 34. Telemetry events: the seven events listed in §6.8.6 fire as specified — `publish_inbound` and `deliver` spans (start/stop/exception) plus one `[:bullx, :gateway, :delivery, :finished]` per terminal delivery with `metadata.outcome ∈ {:sent, :degraded, :failed}` and `measurements.attempts`.
 
 ### 11.10 Boundary isolation
@@ -1585,7 +1589,7 @@ A coding agent has completed this RFC when all of the following hold. The number
 35. Gateway Core code does not depend on `Plug.Conn`, does not define raw_body / query / remote_ip (`Webhook.RawBodyReader` is an optional helper, not part of the Adapter behaviour); GitHub / Shopify / Feishu webhook signature verification logic lives entirely inside the respective adapters.
 36. Webhook listeners are self-hosted by their adapters; concrete webhook implementation details belong to the adapter's RFC, not to the Gateway Core RFC.
 37. Gateway Core may use `BullX.Repo.*` (this RFC supersedes the original "no PostgreSQL" constraint) and may run PostgreSQL migrations; but **no `Oban.insert/1`** — Gateway does not schedule business-level jobs. (DLQ replay uses `BullXGateway.DLQ.ReplayWorker` partitioned workers, defined in RFC 0003, not Oban.)
-38. Any inbound signal's `extensions` contains non-empty `bullx_channel_adapter` / `bullx_channel_tenant`; `scope_id` / `thread_id` live in `data` and are not duplicated into `extensions`.
+38. Any inbound signal's `extensions` contains non-empty `bullx_channel_adapter` / `bullx_channel_id`; `scope_id` / `thread_id` live in `data` and are not duplicated into `extensions`.
 39. **`subject` is human-readable only and not part of any routing path.** A signal whose `subject` has been deliberately scrambled (e.g. wrong adapter prefix, missing scope segment, garbled separator) must still be routed correctly by Runtime / subscribers consuming `extensions["bullx_channel_adapter"]`, `data["event"]["type"]`, `data["event"]["name"]`, and `data["refs"]`. No Gateway code path or documented consumer pattern parses `subject` for routing decisions.
 
 (Outbound boundary criteria belong to RFC 0003.)
@@ -1645,7 +1649,7 @@ This RFC is the result of aligning BullX Gateway with the jido official trio (`j
 | `jido_integration.ControlPlane` (durable run / attempt storage) | `BullXGateway.ControlPlane` + Store behaviour (§7.4, dedupe callbacks here and dead-letter callbacks in RFC 0003) — single PostgreSQL implementation; dev/test via Ecto sandbox |
 | `jido_integration.WebhookRouter.verification` | **Not adopted** — each adapter does its own verification; Gateway only ships `Webhook.RawBodyReader` (§6.6) |
 | `jido_integration.ConsumerProjection` generated Sensor / Plugin | **Not adopted** — BullX Runtime calls `Bus.subscribe` directly; no codegen |
-| `jido_messaging.Room / Participant / Thread / RoomBinding / RoutingPolicy` | **Not adopted** — flat `{channel, scope_id, thread_id, actor, refs}` covers the surveyed IM / webhook scenarios (Feishu streaming / recall / edit / reaction / card action / group reply / multi-room / multi-tenant) |
+| `jido_messaging.Room / Participant / Thread / RoomBinding / RoutingPolicy` | **Not adopted** — flat `{channel, scope_id, thread_id, actor, refs}` covers the surveyed IM / webhook scenarios (Feishu streaming / recall / edit / reaction / card action / group reply / multi-room / multi-channel) |
 | `jido_chat.ModalSubmitEvent / ModalCloseEvent` | **Not adopted** — Slack-specific; modal submit is folded into `Action` (§4.3) |
 
 The spirit is consistent: **the carriage layer (including reliability) is small and stable, the domain layer is distributed and extensible, the policy layer is pluggable**. Differences in BullX Gateway:

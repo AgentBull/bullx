@@ -60,12 +60,11 @@ defmodule BullXGateway.RetryPolicy do
   def classify(%__MODULE__{} = policy, error_map, attempts_so_far)
       when is_map(error_map) and is_integer(attempts_so_far) do
     kind = to_string(error_map["kind"] || "unknown")
-    next_attempt = attempts_so_far + 1
 
     cond do
       MapSet.member?(policy.terminal_kinds, kind) -> :terminal
       not MapSet.member?(policy.retryable_kinds, kind) -> :terminal
-      next_attempt >= policy.max_attempts -> :terminal
+      attempts_so_far >= policy.max_attempts -> :terminal
       true -> :retry
     end
   end

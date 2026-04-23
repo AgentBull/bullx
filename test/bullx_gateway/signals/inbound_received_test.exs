@@ -50,7 +50,7 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
 
     assert signal.data["reply_channel"] == nil
     assert signal.extensions["bullx_channel_adapter"] == "github"
-    assert signal.extensions["bullx_channel_tenant"] == "default"
+    assert signal.extensions["bullx_channel_id"] == "default"
   end
 
   test "rejects non-text content blocks that omit fallback_text" do
@@ -67,7 +67,7 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
       },
       reply_channel: %{
         adapter: :feishu,
-        tenant: "default",
+        channel_id: "default",
         scope_id: "chat_123",
         thread_id: nil
       },
@@ -100,7 +100,7 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
 
       assert signal.data["reply_channel"] == %{
                "adapter" => "feishu",
-               "tenant" => "default",
+               "channel_id" => "default",
                "scope_id" => "oc_xxx",
                "thread_id" => nil
              }
@@ -294,7 +294,7 @@ defmodule BullXGateway.Signals.InboundReceivedTest do
       },
       reply_channel: %{
         adapter: :feishu,
-        tenant: "default",
+        channel_id: "default",
         scope_id: "oc_xxx",
         thread_id: nil
       },

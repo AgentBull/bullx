@@ -1,0 +1,92 @@
+[__meta__]
+bcp47 = "en-US"
+
+[app]
+close = "Close"
+actions = "Actions"
+
+[app.connectivity]
+client_lost_title = "We can't find the internet"
+server_lost_title = "Something went wrong!"
+reconnecting = "Attempting to reconnect"
+
+[errors.validation]
+required = "can't be blank"
+cast = "is invalid"
+format = "has invalid format"
+inclusion = "is invalid"
+exclusion = "is reserved"
+subset = "has an invalid entry"
+confirmation = "does not match confirmation"
+acceptance = "must be accepted"
+
+[errors.validation.length.string]
+min = '''
+.input {$count :integer}
+.match $count
+  1 {{should be at least 1 character}}
+  * {{should be at least {$count} characters}}
+'''
+max = '''
+.input {$count :integer}
+.match $count
+  1 {{should be at most 1 character}}
+  * {{should be at most {$count} characters}}
+'''
+is = '''
+.input {$count :integer}
+.match $count
+  1 {{should be 1 character}}
+  * {{should be {$count} characters}}
+'''
+
+[errors.validation.length.binary]
+min = '''
+.input {$count :integer}
+.match $count
+  1 {{should be at least 1 byte}}
+  * {{should be at least {$count} bytes}}
+'''
+max = '''
+.input {$count :integer}
+.match $count
+  1 {{should be at most 1 byte}}
+  * {{should be at most {$count} bytes}}
+'''
+is = '''
+.input {$count :integer}
+.match $count
+  1 {{should be 1 byte}}
+  * {{should be {$count} bytes}}
+'''
+
+[errors.validation.length.collection]
+min = '''
+.input {$count :integer}
+.match $count
+  1 {{should have at least 1 item}}
+  * {{should have at least {$count} items}}
+'''
+max = '''
+.input {$count :integer}
+.match $count
+  1 {{should have at most 1 item}}
+  * {{should have at most {$count} items}}
+'''
+is = '''
+.input {$count :integer}
+.match $count
+  1 {{should have 1 item}}
+  * {{should have {$count} items}}
+'''
+
+[errors.validation.number]
+less_than = "must be less than {$number}"
+greater_than = "must be greater than {$number}"
+less_than_or_equal_to = "must be less than or equal to {$number}"
+greater_than_or_equal_to = "must be greater than or equal to {$number}"
+equal_to = "must be equal to {$number}"
+not_equal_to = "must be not equal to {$number}"
+
+[users]
+greeting = "Hello, {$name}!"

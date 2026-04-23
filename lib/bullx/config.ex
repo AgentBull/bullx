@@ -3,7 +3,8 @@ defmodule BullX.Config do
   Global runtime configuration infrastructure shared by all BullX modules.
 
   Runtime settings declared through this namespace resolve in the following
-  order: PostgreSQL override, OS environment, then code default.
+  order: PostgreSQL override, OS environment, application config, then code
+  default.
   """
 
   defmacro __using__(_opts) do
@@ -19,7 +20,11 @@ defmodule BullX.Config do
     merged_opts =
       Keyword.merge(
         [
-          binding_order: [BullX.Config.DatabaseBinding, BullX.Config.SystemBinding],
+          binding_order: [
+            BullX.Config.DatabaseBinding,
+            BullX.Config.SystemBinding,
+            BullX.Config.ApplicationBinding
+          ],
           binding_skip: [:system, :config],
           cached: false
         ],

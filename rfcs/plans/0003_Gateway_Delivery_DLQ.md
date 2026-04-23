@@ -13,7 +13,7 @@ The egress surface is defined by four primitives:
 1. **`BullXGateway.Delivery`** — a single struct describing one outbound effect (`:send` / `:edit` / `:stream`), JSON-serializable except for the streaming Enumerable.
 2. **`BullXGateway.Delivery.Outcome`** — the JSON-neutral result of one delivery, with three statuses (`:sent` / `:degraded` / `:failed`) and a Gateway-owned `error` map.
 3. **Two outcome carrier signals** — `com.agentbull.x.delivery.succeeded` and `com.agentbull.x.delivery.failed` — published on `BullXGateway.SignalBus` so any subscriber can correlate by `data.delivery_id`.
-4. **`ScopeWorker`** — one process per `{{adapter, tenant}, scope_id}` that serializes outbound work from an **in-memory queue**, performs retries in memory, and writes a `gateway_dead_letters` row only on a terminal adapter failure that happens while ScopeWorker is alive.
+4. **`ScopeWorker`** — one process per `{{adapter, channel_id}, scope_id}` that serializes outbound work from an **in-memory queue**, performs retries in memory, and writes a `gateway_dead_letters` row only on a terminal adapter failure that happens while ScopeWorker is alive.
 
 The ScopeWorker is not a durable state machine. On a BEAM crash, any in-flight outbound work is simply lost — no outcome signal and no dead-letter row are emitted for it. Runtime + Oban is the business-layer retry authority and is responsible for re-dispatching outstanding deliveries after a restart.
 
@@ -58,7 +58,7 @@ The egress runtime adopts the same four constraints that govern the rest of the 
 
 1. **Single-node.** No cross-node routing, no distributed bus, no global consistency. `ScopeWorker` and `OutboundDeduper` are local.
 2. **Minimal outbound persistence.** The only outbound PostgreSQL write is `gateway_dead_letters` (UNLOGGED) on a terminal adapter failure observed while ScopeWorker is alive. There is no in-flight dispatch table and no per-attempt table. dev/test uses Ecto Sandbox; there is no ETS-backed `Store` implementation. (See §7.4 for the rationale.)
-3. **Process isolation per scope.** A failure in one `ScopeWorker` (or in the adapter it invokes) must not affect any other `{{adapter, tenant}, scope_id}`. Adapter exceptions are caught at the `ScopeWorker` boundary; adapter subtree DOWN events terminate only the in-flight `:stream` Tasks owned by the affected scopes.
+3. **Process isolation per scope.** A failure in one `ScopeWorker` (or in the adapter it invokes) must not affect any other `{{adapter, channel_id}, scope_id}`. Adapter exceptions are caught at the `ScopeWorker` boundary; adapter subtree DOWN events terminate only the in-flight `:stream` Tasks owned by the affected scopes.
 4. **`BullXGateway.Delivery` is a struct distinct from inbound `Inputs.*`.** Outbound is not a mirror of inbound and is not modelled as a variant of `Jido.Signal`. The Delivery struct is the source-of-truth contract that Runtime constructs and the Gateway acts on.
 
 Two further conventions apply throughout:
@@ -88,7 +88,7 @@ Production timing:
 %Jido.Signal{
   specversion: "1.0.2",
   id: Jido.Signal.ID.generate!(),                        # one fresh UUID7 per outcome event
-  source: "bullx://gateway/#{adapter}/#{tenant}",
+  source: "bullx://gateway/#{adapter}/#{channel_id}",
   type: "com.agentbull.x.delivery.succeeded" | "com.agentbull.x.delivery.failed",
   subject: "#{adapter}:#{scope_id}#{if thread_id, do: ":#{thread_id}", else: ""}",
   time: DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -96,7 +96,7 @@ Production timing:
   data: BullXGateway.Delivery.Outcome.to_signal_data(outcome),  # contains "delivery_id" key
   extensions: %{
     "bullx_channel_adapter" => Atom.to_string(adapter),
-    "bullx_channel_tenant" => tenant,
+    "bullx_channel_id" => channel_id,
     "bullx_caused_by" => delivery.caused_by_signal_id    # omitted when nil
   }
 }
@@ -137,7 +137,7 @@ Callers correlate received outcomes by `data.delivery_id` (preferred) or `extens
 
 ```elixir
 defmodule BullXGateway.Delivery do
-  @type channel :: {adapter :: atom(), tenant :: String.t()}
+  @type channel :: {adapter :: atom(), channel_id :: String.t()}
 
   @type op :: :send | :edit | :stream
 
@@ -160,7 +160,7 @@ Field semantics:
 
 - **`id`** — caller-supplied identifier (UUID7 strongly recommended, e.g. `Uniq.UUID.uuid7/0`). Must be unique per intended effect; reused values are deduped to the original outcome (§7.7).
 - **`op`** — one of `:send`, `:edit`, `:stream`. Must match a declared op-capability of the resolved adapter (§6.2).
-- **`channel`** — `{adapter_atom, tenant_string}`. **`tenant` is always a `String.t()`**, never `term()`.
+- **`channel`** — `{adapter_atom, channel_id_string}`. **`channel_id` is always a `String.t()`**, never `term()`. See RFC 0002 §6.1 for the per-binding semantics (one adapter module can be registered under multiple distinct `channel_id` values).
 - **`scope_id` / `thread_id`** — same names as `data.scope_id` / `data.thread_id` on inbound signals and as the keys inside `data.reply_channel`. Runtime constructing a Delivery from an inbound reads `data.reply_channel` directly without renaming fields.
 - **`reply_to_external_id`** — optional on `:send`. Means "reply to external message _X_". Adapters bridge platform-specific reply semantics (Feishu quote reply, Slack thread reply, etc.). If `thread_id` is also set, both fields are honored according to adapter contract.
 - **`target_external_id`** — required for `:edit`. Identifies the external message to mutate.
@@ -426,7 +426,7 @@ This is the load-bearing realisation of the degradation principle (§6.4): degra
 Steps:
 
 1. **Delivery shape validation.** Validate the struct fields (id non-empty, op ∈ `:send | :edit | :stream`, channel `{atom, string}`, scope_id non-empty, content shape matches op, etc.). On failure return `{:error, {:invalid_delivery, reason}}`. **Do not** publish `delivery.failed`. **Do not** write to PostgreSQL.
-2. **Channel lookup** in `BullXGateway.AdapterRegistry` (RFC 0002). If the `{adapter, tenant}` pair is not registered, return `{:error, {:unknown_channel, channel}}`. **Do not** publish `delivery.failed`. **Do not** write to PostgreSQL.
+2. **Channel lookup** in `BullXGateway.AdapterRegistry` (RFC 0002). If the `{adapter, channel_id}` pair is not registered, return `{:error, {:unknown_channel, channel}}`. **Do not** publish `delivery.failed`. **Do not** write to PostgreSQL.
 3. **Capability pre-flight.** Read `adapter.capabilities/0`. If `delivery.op` is not declared: publish `delivery.failed{error.kind = "unsupported"}` (envelope per §4.1, with `data` produced by `Outcome.to_signal_data/1`) and write a `gateway_dead_letters` row capturing the original delivery as `payload`. Return `{:ok, delivery.id}`. (Note: the function still returns success because the failure has been observably recorded; the caller correlates by `data.delivery_id` on the Bus.) **Metadata-capabilities are not checked here** (§6.2).
 4. **`Security.sanitize_outbound`.** Invoke the configured `Security` adapter (behaviour defined in RFC 0002). Possible outcomes:
    - `{:ok, sanitized_delivery}` → continue with `sanitized_delivery`.
@@ -460,7 +460,7 @@ These two rules are what make the metadata-capability axis usable as a **hint** 
 
 ### 7.1 Lifecycle (recap)
 
-The Gateway's startup ordering is fully specified in RFC 0002 §7.1. For the egress half, the relevant ordering is `Repo → Gateway.CoreSupervisor → Runtime.Supervisor → AdapterSupervisor`. `ScopeWorker` instances live under `BullXGateway.Dispatcher` (a `DynamicSupervisor` child of `CoreSupervisor`); they are started **lazily** on the first `deliver/1` for a given `{{adapter, tenant}, scope_id}`. There is no boot-time recovery scan — the ScopeWorker holds no durable state, so there is nothing to rebuild at boot. Workers do not need `AdapterSupervisor` to be running in order to be started — the adapter is invoked through the registered module from `AdapterRegistry`, and a missing adapter subtree causes adapter callbacks to fail in the normal failure path.
+The Gateway's startup ordering is fully specified in RFC 0002 §7.1. For the egress half, the relevant ordering is `Repo → Gateway.CoreSupervisor → Runtime.Supervisor → AdapterSupervisor`. `ScopeWorker` instances live under `BullXGateway.Dispatcher` (a `DynamicSupervisor` child of `CoreSupervisor`); they are started **lazily** on the first `deliver/1` for a given `{{adapter, channel_id}, scope_id}`. There is no boot-time recovery scan — the ScopeWorker holds no durable state, so there is nothing to rebuild at boot. Workers invoke the adapter module registered in `AdapterRegistry`; when a channel was started by `AdapterSupervisor.start_channel/3`, the registry config also carries the per-channel supervisor pid as `anchor_pid`.
 
 ### 7.2 Core supervisor children added by this RFC
 
@@ -476,11 +476,11 @@ BullXGateway.CoreSupervisor
 └── BullXGateway.Retention               # extended with egress sweep (see §7.9)
 ```
 
-`BullXGateway.AdapterSupervisor` (the per-channel adapter subtrees produced by `adapter.child_specs/2`) sits outside `CoreSupervisor` and is started by the application after `Runtime.Supervisor` is ready, exactly as in RFC 0002.
+`BullXGateway.AdapterSupervisor` sits outside `CoreSupervisor` and is started by the application after `Runtime.Supervisor` is ready, exactly as in RFC 0002. It owns one per-channel supervisor for each configured adapter channel; that channel supervisor wraps the child specs returned by `adapter.child_specs/2` and is the anchor pid observed by egress ScopeWorkers.
 
 Notes:
 
-- **`Dispatcher`** is a `DynamicSupervisor` named `BullXGateway.Dispatcher`. It supervises one `ScopeWorker` per `{{adapter, tenant}, scope_id}` actually in use.
+- **`Dispatcher`** is a `DynamicSupervisor` named `BullXGateway.Dispatcher`. It supervises one `ScopeWorker` per `{{adapter, channel_id}, scope_id}` actually in use.
 - **`ScopeRegistry`** is a `Registry` named `BullXGateway.ScopeRegistry` used as the via-tuple name source for `ScopeWorker` processes (`{:via, Registry, {BullXGateway.ScopeRegistry, {channel, scope_id}}}`).
 - **`OutboundDeduper`** is a single GenServer owning a public ETS table, plus a periodic sweep timer (§7.7).
 - **`DLQ.ReplaySupervisor`** is a small subtree (a `Registry` + `N` worker GenServers, partitioned by `:erlang.phash2/2`); see §7.8.
@@ -521,7 +521,7 @@ Holds terminally-failed deliveries as failure evidence. This is the only outboun
 | `dispatch_id` | text PK | same value as the original `delivery.id` |
 | `op` | text | |
 | `channel_adapter` | text | |
-| `channel_tenant` | text | |
+| `channel_id` | text | |
 | `scope_id` | text | |
 | `thread_id` | text NULL | |
 | `caused_by_signal_id` | text NULL | |
@@ -534,7 +534,7 @@ Holds terminally-failed deliveries as failure evidence. This is the only outboun
 
 Indexes:
 
-- `(channel_adapter, channel_tenant, scope_id, dead_lettered_at DESC)` — drives `list_dead_letters/1` filtered by channel and scope.
+- `(channel_adapter, channel_id, scope_id, dead_lettered_at DESC)` — drives `list_dead_letters/1` filtered by channel and scope.
 - `(dead_lettered_at DESC)` — drives the default ops feed and the 90-day Retention sweep.
 
 #### 7.4.2 Rationale for UNLOGGED
@@ -547,7 +547,7 @@ The whole Gateway schema is now two UNLOGGED tables: `gateway_dedupe_seen` (RFC 
 
 ### 7.5 Egress: `Dispatcher` + `ScopeWorker`
 
-`ScopeWorker` is keyed by `{{adapter, tenant}, scope_id}`. Same key → serialized; different keys → independent and parallel.
+`ScopeWorker` is keyed by `{{adapter, channel_id}, scope_id}`. Same key → serialized; different keys → independent and parallel.
 
 #### 7.5.1 Responsibilities
 
@@ -640,7 +640,7 @@ ScopeWorker stores the `task.ref` against `delivery.id`.
 
 #### 7.6.2 Adapter subtree DOWN via `Process.monitor`
 
-ScopeWorker `Process.monitor`s the adapter subtree anchor pid that the adapter exposes through `context` (typically a per-channel supervisor pid registered by `child_specs/2`). On `{:DOWN, _ref, :process, _pid, _reason}`:
+ScopeWorker `Process.monitor`s the adapter subtree anchor pid that `AdapterSupervisor.start_channel/3` stores in `AdapterRegistry` config and exposes through `context`. On `{:DOWN, _ref, :process, _pid, _reason}`:
 
 - For every in-flight `:stream` Task owned by this ScopeWorker: `Task.shutdown(task, :brutal_kill)`.
 - The Task exit is then handled per §7.6.3.
@@ -772,7 +772,7 @@ The canonical pattern for constructing a Delivery from an inbound signal's `data
 reply = inbound.data["reply_channel"]
 
 if reply do
-  channel = {String.to_existing_atom(reply["adapter"]), reply["tenant"]}
+  channel = {String.to_existing_atom(reply["adapter"]), reply["channel_id"]}
 
   %BullXGateway.Delivery{
     id: Uniq.UUID.uuid7(),
@@ -848,7 +848,7 @@ A coding agent has completed this RFC when **all** of the following hold. Number
 ### 11.1 Delivery + Capability
 
 1. `BullX.Gateway.deliver/1` returns `{:error, {:invalid_delivery, reason}}` for a malformed Delivery and **does not** publish `delivery.failed` and **does not** write any database row.
-2. `BullX.Gateway.deliver/1` returns `{:error, {:unknown_channel, channel}}` for an unregistered `{adapter, tenant}` and **does not** publish `delivery.failed` and **does not** write any database row.
+2. `BullX.Gateway.deliver/1` returns `{:error, {:unknown_channel, channel}}` for an unregistered `{adapter, channel_id}` and **does not** publish `delivery.failed` and **does not** write any database row.
 3. `BullXGateway.Adapter.capabilities/0` is a required callback. If the resolved adapter does not declare the requested op-capability (`:send | :edit | :stream`), `deliver/1` publishes `delivery.failed{error.kind = "unsupported"}`, writes a `gateway_dead_letters` row, and returns `{:ok, delivery.id}`.
 4. Metadata-capabilities (`:cards | :reactions | :threads | …`) are **not** consulted by `deliver/1`. A Delivery with `op: :send, content: %{kind: :card, ...}` against an adapter declaring `[:send]` (no `:cards`) is cast to ScopeWorker; the adapter is expected to degrade via `fallback_text` and return `Outcome{status: :degraded}`.
 5. `Security.sanitize_outbound` returning a deny shape causes `deliver/1` to return `{:error, {:security_denied, :sanitize, reason_atom, description}}`. No `delivery.*` outcome is published.
@@ -866,9 +866,9 @@ A coding agent has completed this RFC when **all** of the following hold. Number
 14. `BullXGateway.Delivery.Outcome.to_signal_data/1` returns a JSON-neutral string-keyed map with `status` as `"sent" | "degraded" | "failed"` (string, not atom).
 15. The `delivery.succeeded` and `delivery.failed` envelopes:
     - `id` is a fresh `Jido.Signal.ID.generate!/0` per outcome event (NOT the `delivery.id`), so multiple outcomes for the same `delivery.id` (e.g. failure then DLQ-replay success) have distinct `signal.id`s linked through `data["delivery_id"]`.
-    - `source = "bullx://gateway/#{adapter}/#{tenant}"`.
+    - `source = "bullx://gateway/#{adapter}/#{channel_id}"`.
     - `subject = "<adapter>:<scope>[:<thread>]"` (human-readable only; not parsed by routing).
-    - `extensions` carries `bullx_channel_adapter` and `bullx_channel_tenant`. When `caused_by_signal_id` is set, `extensions["bullx_caused_by"]` is also present.
+    - `extensions` carries `bullx_channel_adapter` and `bullx_channel_id`. When `caused_by_signal_id` is set, `extensions["bullx_caused_by"]` is also present.
 
 ### 11.3 ScopeWorker + Stream
 
@@ -895,7 +895,7 @@ A coding agent has completed this RFC when **all** of the following hold. Number
 
 31. The Gateway egress code does not call `Oban.insert/1` (Gateway does not schedule business-level jobs). DLQ replay is implemented by partitioned `BullXGateway.DLQ.ReplayWorker` processes routed by `:erlang.phash2/2`, not by Oban.
 32. `delivery.*` outcome signals may carry `extensions["bullx_caused_by"]`; envelope keys are restricted to those listed in §4.1 plus the per-RFC-0002 inbound provenance keys (no business payload is leaked into `extensions`).
-33. The `context` map passed to `adapter.deliver/2` and `adapter.stream/3` always contains at minimum `%{channel: BullX.Delivery.channel(), config: map(), telemetry: map()}`. Adapters are free to read additional keys exposed by `child_specs/2` (for example, an internal subtree pid for `Process.monitor`), but the three required keys are guaranteed by the Gateway egress contract on every call.
+33. The `context` map passed to `adapter.deliver/2` and `adapter.stream/3` always contains at minimum `%{channel: BullX.Delivery.channel(), config: map(), telemetry: map()}`. When the channel was started by `AdapterSupervisor.start_channel/3`, `context.anchor_pid` is also present and points at the per-channel adapter supervisor. The three required keys are guaranteed by the Gateway egress contract on every call.
 
 If any criterion fails, the RFC is not complete.
 

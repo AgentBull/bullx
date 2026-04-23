@@ -10,7 +10,7 @@ defmodule BullXGateway.ControlPlane.DeadLetter do
   schema "gateway_dead_letters" do
     field :op, :string
     field :channel_adapter, :string
-    field :channel_tenant, :string
+    field :channel_id, :string
     field :scope_id, :string
     field :thread_id, :string
     field :caused_by_signal_id, :string
@@ -28,7 +28,7 @@ defmodule BullXGateway.ControlPlane.DeadLetter do
       :dispatch_id,
       :op,
       :channel_adapter,
-      :channel_tenant,
+      :channel_id,
       :scope_id,
       :thread_id,
       :caused_by_signal_id,
@@ -43,7 +43,7 @@ defmodule BullXGateway.ControlPlane.DeadLetter do
       :dispatch_id,
       :op,
       :channel_adapter,
-      :channel_tenant,
+      :channel_id,
       :scope_id,
       :payload,
       :final_error,
