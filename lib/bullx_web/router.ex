@@ -4,6 +4,7 @@ defmodule BullXWeb.Router do
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
+    plug BullXWeb.Plugs.FetchCurrentUser
     plug :fetch_live_flash
     plug :put_root_layout, html: {BullXWeb.Layouts, :root}
     plug :protect_from_forgery
@@ -18,6 +19,9 @@ defmodule BullXWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+    get "/login", SessionController, :new
+    post "/login", SessionController, :create
+    delete "/logout", SessionController, :delete
   end
 
   # Other scopes may use custom stacks.

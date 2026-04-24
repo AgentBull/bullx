@@ -28,8 +28,8 @@ defmodule BullX.DataCase do
   end
 
   setup tags do
-    BullX.DataCase.setup_sandbox(tags)
-    :ok
+    sandbox_owner = BullX.DataCase.setup_sandbox(tags)
+    {:ok, sandbox_owner: sandbox_owner}
   end
 
   @doc """
@@ -38,6 +38,7 @@ defmodule BullX.DataCase do
   def setup_sandbox(tags) do
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(BullX.Repo, shared: not tags[:async])
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid
   end
 
   @doc """

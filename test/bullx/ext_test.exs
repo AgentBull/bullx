@@ -92,4 +92,44 @@ defmodule BullX.ExtTest do
   test "z85_encode/1 rejects payloads whose length is not divisible by 4" do
     assert BullX.Ext.z85_encode("abc") == {:error, "input length must be divisible by 4"}
   end
+
+  test "argon2_hash/1 returns a PHC-formatted Argon2id string" do
+    phc = BullX.Ext.argon2_hash("correct horse battery staple")
+
+    assert is_binary(phc)
+    assert String.starts_with?(phc, "$argon2id$")
+  end
+
+  test "argon2_verify/2 accepts the original password and rejects others" do
+    phc = BullX.Ext.argon2_hash("correct horse battery staple")
+
+    assert BullX.Ext.argon2_verify("correct horse battery staple", phc) == true
+    assert BullX.Ext.argon2_verify("wrong password", phc) == false
+  end
+
+  test "argon2_verify/2 returns a tagged error for malformed PHC strings" do
+    assert {:error, reason} = BullX.Ext.argon2_verify("anything", "not-a-phc-string")
+    assert reason =~ "invalid phc string"
+  end
+
+  test "argon2 nifs validate argument types" do
+    assert BullX.Ext.argon2_hash(123) == {:error, "password must be a binary"}
+    assert BullX.Ext.argon2_verify(123, "irrelevant") == {:error, "password must be a binary"}
+    assert BullX.Ext.argon2_verify("pwd", 123) == {:error, "phc must be a string"}
+  end
+
+  test "phone_normalize_e164/1 canonicalizes valid international numbers" do
+    assert BullX.Ext.phone_normalize_e164("+8613800138000") == "+8613800138000"
+    assert BullX.Ext.phone_normalize_e164("+1 415 555 2671") == "+14155552671"
+  end
+
+  test "phone_normalize_e164/1 rejects ambiguous or malformed input" do
+    assert {:error, reason} = BullX.Ext.phone_normalize_e164("13800138000")
+    assert reason =~ "invalid phone number"
+
+    assert {:error, reason} = BullX.Ext.phone_normalize_e164("+1 000")
+    assert reason =~ "invalid phone number"
+
+    assert BullX.Ext.phone_normalize_e164(123) == {:error, "phone must be a string"}
+  end
 end

@@ -6,9 +6,11 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod crypto {
+  pub mod argon2;
   pub mod blake3;
 }
 
 mod encoding;
+mod phone;
 
 rustler::init!("Elixir.BullX.Ext");

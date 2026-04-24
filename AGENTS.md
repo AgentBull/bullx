@@ -248,6 +248,7 @@ Several Jido terms collide with more general meanings that dominate LLM training
 - Prefer deletion over addition. If the same behavior can be preserved by removing code, remove code.
 - Reuse existing utilities and patterns first. Search before creating a new helper, module, behaviour, process, schema, or dependency.
 - If a PostgreSQL table primary key is UUID, BullX code must generate the value with `BullX.Ext.gen_uuid_v7/0` before insert. In Ecto schemas, standardize this as `@primary_key {:id, BullX.Ecto.UUIDv7, autogenerate: true}` and do not rely on PostgreSQL-side UUID defaults such as `gen_random_uuid()`.
+- Prefer PostgreSQL-native types and constraints when they model the domain directly. Use native `CREATE TYPE … AS ENUM` for closed sets mapped through `Ecto.Enum`, `jsonb` for structured payloads, native `interval` / `tstzrange` / `numeric(p,s)` for their domains, and table-level CHECK/EXCLUDE/foreign-key constraints rather than re-implementing the same invariant in Elixir. Only fall back to generic `:text` plus a CHECK constraint when the value set is genuinely open-ended or expected to change without a migration.
 - Do not add dependencies unless the user explicitly requests or approves them.
 - Do not introduce a new abstraction for a single use. Wait for repeated pressure or a clearly named domain boundary.
 - Do not optimize for the local patch at the cost of future change. Code is not static. It will move, split, merge, and be deleted.

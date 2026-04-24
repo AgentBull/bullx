@@ -1,0 +1,28 @@
+<Layouts.flash_group flash={@flash} />
+
+<main class="min-h-screen bg-base-100 px-4 py-10 sm:px-6 lg:px-8">
+  <div class="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-md items-center">
+    <div class="w-full">
+      <div class="mb-8 flex items-center gap-3">
+        <img src={~p"/images/logo.svg"} class="h-10 w-10" alt="" />
+        <div>
+          <h1 class="text-xl font-semibold text-base-content">BullX</h1>
+          <p class="text-sm text-base-content/60">Web control plane login</p>
+        </div>
+      </div>
+
+      <.form for={@form} action={~p"/login"} method="post" class="space-y-5">
+        <.input
+          field={@form[:auth_code]}
+          label="Authentication code"
+          autocomplete="one-time-code"
+          required
+        />
+
+        <button type="submit" class="btn btn-primary w-full">
+          Sign in
+        </button>
+      </.form>
+    </div>
+  </div>
+</main>
