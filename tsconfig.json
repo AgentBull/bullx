@@ -1,0 +1,13 @@
+// This file enables editor support for the React/Inertia asset tree.
+// Vite resolves Phoenix JavaScript packages through aliases in assets/vite.config.mjs.
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./assets/js/*"]
+    },
+    "allowJs": true,
+    "noEmit": true
+  },
+  "include": ["assets/js/**/*"]
+}

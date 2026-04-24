@@ -9,6 +9,10 @@ Code.require_file("support/bootstrap.exs", __DIR__)
 # before starting your production server.
 config :bullx, BullXWeb.Endpoint, cache_static_manifest: "priv/static/cache_manifest.json"
 
+config :bullx, session_cookie_secure: true
+
+config :bullx, :vite, manifest_required?: true
+
 # Force using SSL in production. This also sets the "strict-security-transport" header,
 # known as HSTS. If you have a health check endpoint, you may want to exclude it below.
 # Note `:force_ssl` is required to be set at compile-time.

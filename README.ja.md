@@ -38,51 +38,68 @@ BullX は、Elixir/OTP と PostgreSQL 上に構築された、高可用・自己
 
 ## はじめに
 
-**前提条件：** Elixir 1.20+、PostgreSQL
+**前提条件：** Elixir 1.20+、PostgreSQL、Bun
+
+PostgreSQL が起動しており、`.env.dev` または `.env.local` の `DATABASE_URL` が利用可能なデータベースを指していることを確認してください。
 
 ```sh
-# 依存関係のインストール、データベースの作成・マイグレーション、アセットのビルド
+# Elixir 依存関係、JS 依存関係、データベース、アセットを初期化
 mix setup
 
-# アプリケーションの起動（IEx シェル + HTTP サーバー）
+# Phoenix を起動。Vite は開発用アセットサーバーとして起動
 iex -S mix phx.server
 ```
 
 `http://localhost:4000` を開きます。
 
+ローカルの `users` テーブルが空の場合、`/` は `/setup` にリダイレクトします。少なくとも一人のユーザーが存在する場合、未ログインユーザーは `/sessions/new` に送られ、ログイン済みユーザーは `/` でコントロールパネル SPA に入ります。
+
+開発環境では Phoenix が Vite を endpoint watcher として起動します。ブラウザで開く入口は `http://localhost:4000` のままで、Vite は `http://localhost:5173` から React/Inertia の hot reload を提供します。
+これらのポートがすでに使われている場合は、`.env.local` に `PORT` と `VITE_PORT` を設定します。例: `PORT=4001`、`VITE_PORT=5174`。
+
+よく使うプロジェクトコマンド:
+
+```sh
+# JS 依存関係をインストール/更新
+bun install
+```
+
+```sh
+# コミット前に使うプロジェクト全体のチェック
+mix precommit
+```
+
+## Vite アセットビルド
+
+React/Inertia のエントリーポイントは `assets/js/app.jsx` にあり、各 SPA ページは `assets/js/spas/` 以下にあります。デプロイ可能なアセットを作るとき、Vite は `priv/static/assets/.vite/manifest.json` を書き出し、開発環境以外では Phoenix がその manifest から script と stylesheet を解決します。
+Bun はリポジトリルートから実行します。Vite は `assets/` をソース root として扱います。
+
+```sh
+# Vite アセットと manifest をビルド
+mix assets.build
+
+# 本番アセットをビルドし digest を生成
+mix assets.deploy
+```
+
+`mix assets.deploy` はコンパイル、Vite build、`phx.digest` を実行します。本番 release を作る前に実行してください。
+
 **本番環境：**
 
 ```sh
+MIX_ENV=prod mix assets.deploy
 MIX_ENV=prod mix release
 _build/prod/rel/bullx/bin/bullx start
 ```
 
-## 設定
+## 環境ファイル
 
-BullX の設定には二つのフェーズがあります。
-
-**ブートストラップ設定**——アプリケーション起動前に必要な値（データベース URL、ポート、シークレットキーなど）。標準の `config/*.exs` ファイルに保持され、`config/support/bootstrap.exs` の共有ヘルパーを通じて起動時に読み込まれます。`.env` ファイルの読み込みをサポートしますが、PostgreSQL は参照しません。
-
-**ランタイム動的設定**——再起動なしで変更できる値。`BullX.Config` で宣言し、以下の順序で解決されます：PostgreSQL オーバーライド → OS 環境変数 → コードデフォルト値。読み取りは ETS キャッシュから提供され、書き込み後はキャッシュを明示的に更新します。
-
-**`.env` ファイルのサポート**——リポジトリルートに `.env.example` 形式のファイルを置くことでローカルオーバーライドを提供できます。ファイルは以下の順序でマージされます（後優先、既存の OS 環境変数は常に最優先）。
+BullX はリポジトリルートから dotenv ファイルを読み込みます。後から読み込まれるファイルが先の値を上書きし、すでに存在する OS 環境変数は dotenv の値より優先されます。
 
 | 環境 | ロード順 |
 |---|---|
-| 開発 | `.env` → `.env.development` → `.env.local` |
+| 開発 | `.env` → `.env.dev` → `.env.local` |
 | テスト | `.env` → `.env.test` |
-| 本番 | `.env` → `.env.production` |
+| 本番 | `.env` → `.env.prod` |
 
-> `.env.local` は `.gitignore` に追加済みで、マシン固有の機密情報を置くためのものです。`.env`、`.env.development`、`.env.test` はチーム共有の非機密デフォルト値としてバージョン管理にコミットできます。
-
-**ランタイム値の制約**——ランタイム設定はプリミティブ型に加え、[Zoi](https://hex.pm/packages/zoi) スキーマを宣言できます。Zoi 制約を満たさない値はサイレントにスキップされ、フォールバックチェーンの次のソースが試みられます。
-
-**実行時に設定を変更する：**
-
-```elixir
-# 新しい値を PostgreSQL に保存し、ローカルの ETS キャッシュを更新
-BullX.Config.put("bullx.gateway_webhook_timeout_ms", "5000")
-
-# オーバーライドを削除し、OS 環境変数またはコードデフォルト値にフォールバック
-BullX.Config.delete("bullx.gateway_webhook_timeout_ms")
-```
+> `.env.local` は `.gitignore` に追加済みで、マシン固有の機密情報を置くためのものです。`.env`、`.env.dev`、`.env.test` はチーム共有の非機密デフォルト値としてバージョン管理にコミットできます。

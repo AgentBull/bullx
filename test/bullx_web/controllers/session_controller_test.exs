@@ -5,30 +5,49 @@ defmodule BullXWeb.SessionControllerTest do
   alias BullXAccounts.UserChannelAuthCode
   alias BullXAccounts.UserChannelBinding
 
-  test "GET /login renders the auth-code form", %{conn: conn} do
-    conn = get(conn, ~p"/login")
+  test "GET /sessions/new redirects to setup when no user exists", %{conn: conn} do
+    conn = get(conn, ~p"/sessions/new")
 
-    assert html_response(conn, 200) =~ "Authentication code"
+    assert redirected_to(conn) == ~p"/setup"
   end
 
-  test "POST /login consumes a channel auth code and stores only the user id in session", %{
+  test "GET /sessions/new renders the sessions SPA for anonymous users", %{conn: conn} do
+    insert_user!(display_name: "Alice")
+
+    conn = get(conn, ~p"/sessions/new")
+
+    assert html_response(conn, 200) =~ "sessions/New"
+  end
+
+  test "GET /sessions/new redirects home when already signed in", %{conn: conn} do
+    user = insert_user!(display_name: "Alice")
+
+    conn =
+      conn
+      |> init_test_session(%{user_id: user.id})
+      |> get(~p"/sessions/new")
+
+    assert redirected_to(conn) == ~p"/"
+  end
+
+  test "POST /sessions consumes a channel auth code and stores only the user id in session", %{
     conn: conn
   } do
     user = insert_user!(display_name: "Alice")
     insert_binding!(user, adapter: "feishu", channel_id: "main", external_id: "ou_1")
     assert {:ok, code} = BullXAccounts.issue_user_channel_auth_code(:feishu, "main", "ou_1")
 
-    conn = post(conn, ~p"/login", %{"session" => %{"auth_code" => code}})
+    conn = post(conn, ~p"/sessions", %{"session" => %{"auth_code" => code}})
 
     assert redirected_to(conn) == ~p"/"
     assert get_session(conn, :user_id) == user.id
     assert Repo.aggregate(UserChannelAuthCode, :count) == 0
   end
 
-  test "POST /login rejects expired or invalid codes", %{conn: conn} do
-    conn = post(conn, ~p"/login", %{"session" => %{"auth_code" => "NOPE"}})
+  test "POST /sessions rejects expired or invalid codes", %{conn: conn} do
+    conn = post(conn, ~p"/sessions", %{"session" => %{"auth_code" => "NOPE"}})
 
-    assert redirected_to(conn) == ~p"/login"
+    assert redirected_to(conn) == ~p"/sessions/new"
 
     assert Phoenix.Flash.get(conn.assigns.flash, :error) ==
              "Invalid or expired authentication code."
@@ -43,23 +62,23 @@ defmodule BullXWeb.SessionControllerTest do
     |> User.changeset(%{status: :banned})
     |> Repo.update!()
 
-    conn = post(conn, ~p"/login", %{"session" => %{"auth_code" => code}})
+    conn = post(conn, ~p"/sessions", %{"session" => %{"auth_code" => code}})
 
-    assert redirected_to(conn) == ~p"/login"
+    assert redirected_to(conn) == ~p"/sessions/new"
     assert get_session(conn, :user_id) == nil
   end
 
-  test "DELETE /logout clears the session and redirects to /login", %{conn: conn} do
+  test "DELETE /sessions clears the session and redirects to sign-in", %{conn: conn} do
     user = insert_user!(display_name: "Alice")
     insert_binding!(user, adapter: "feishu", channel_id: "main", external_id: "ou_1")
     assert {:ok, code} = BullXAccounts.issue_user_channel_auth_code(:feishu, "main", "ou_1")
 
-    conn = post(conn, ~p"/login", %{"session" => %{"auth_code" => code}})
+    conn = post(conn, ~p"/sessions", %{"session" => %{"auth_code" => code}})
     assert get_session(conn, :user_id) == user.id
 
-    conn = delete(conn, ~p"/logout")
+    conn = delete(conn, ~p"/sessions")
 
-    assert redirected_to(conn) == ~p"/login"
+    assert redirected_to(conn) == ~p"/sessions/new"
     assert get_session(conn, :user_id) == nil
   end
 

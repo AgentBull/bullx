@@ -8,6 +8,7 @@ defmodule BullXAccounts do
 
   alias BullXAccounts.AuthN
 
+  defdelegate setup_required?(), to: AuthN
   defdelegate resolve_channel_actor(adapter, channel_id, external_id), to: AuthN
   defdelegate fetch_session_user(user_id), to: AuthN
   defdelegate match_or_create_from_channel(input), to: AuthN

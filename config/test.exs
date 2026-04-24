@@ -10,11 +10,7 @@ BullX.Config.Bootstrap.load_dotenv!(root: Path.expand("..", __DIR__), env: :test
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :bullx, BullX.Repo,
-  url:
-    BullX.Config.Bootstrap.env_string(
-      "DATABASE_URL",
-      "postgresql://postgres:postgres@localhost:5432/bullx_test"
-    ),
+  url: BullX.Config.Bootstrap.env!("DATABASE_URL", & &1),
   database: "bullx_test#{BullX.Config.Bootstrap.env_string("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2

@@ -38,51 +38,68 @@ BullX 是一个高可用、自演化、自愈的 AI Agent 操作系统，基于 
 
 ## 快速上手
 
-**前置条件：** Elixir 1.20+、PostgreSQL
+**前置条件：** Elixir 1.20+、PostgreSQL、Bun
+
+确保 PostgreSQL 正在运行，并且 `.env.dev` 或 `.env.local` 中的 `DATABASE_URL` 指向可用数据库。
 
 ```sh
-# 安装依赖、创建并迁移数据库、构建静态资源
+# 初始化 Elixir 依赖、JS 依赖、数据库和资产
 mix setup
 
-# 启动应用（带 IEx 交互 shell + HTTP 服务）
+# 启动 Phoenix；Vite 会作为开发资源服务一起启动
 iex -S mix phx.server
 ```
 
 访问 `http://localhost:4000`。
 
+当本地 `users` 表为空时，`/` 会跳转到 `/setup`。一旦至少存在一个用户，未登录用户会进入 `/sessions/new`，已登录用户访问 `/` 时会挂载控制台 SPA。
+
+开发模式下，Phoenix 会把 Vite 作为 endpoint watcher 启动。浏览器入口仍然是 `http://localhost:4000`；Vite 在 `http://localhost:5173` 为 React/Inertia 提供热更新。
+如果这些端口已被占用，可以在 `.env.local` 中设置 `PORT` 和 `VITE_PORT`，例如 `PORT=4001`、`VITE_PORT=5174`。
+
+常用项目命令：
+
+```sh
+# 安装/更新 JS 依赖
+bun install
+```
+
+```sh
+# 运行提交前的完整项目检查
+mix precommit
+```
+
+## Vite 资产构建
+
+React/Inertia 入口位于 `assets/js/app.jsx`，各 SPA 页面位于 `assets/js/spas/`。构建可部署资产时，Vite 会写入 `priv/static/assets/.vite/manifest.json`；非开发环境下，Phoenix 会从该 manifest 解析脚本与样式。
+从仓库根目录运行 Bun；Vite 仍然以 `assets/` 作为源码根目录。
+
+```sh
+# 构建 Vite 资产和 manifest
+mix assets.build
+
+# 构建生产资产并生成 digest
+mix assets.deploy
+```
+
+`mix assets.deploy` 会执行编译、Vite build 和 `phx.digest`。构建生产 release 前先运行它。
+
 **生产环境：**
 
 ```sh
+MIX_ENV=prod mix assets.deploy
 MIX_ENV=prod mix release
 _build/prod/rel/bullx/bin/bullx start
 ```
 
-## 配置
+## 环境文件
 
-BullX 的配置分为两个阶段：
-
-**启动配置（Bootstrap）**——应用启动前所需的值（数据库 URL、端口、密钥等），保留在标准的 `config/*.exs` 文件中，通过 `config/support/bootstrap.exs` 中的共享辅助函数在启动时读取。支持 `.env` 文件加载，但不读取 PostgreSQL。
-
-**运行时动态配置**——无需重启即可更改的值，通过 `BullX.Config` 声明，按以下顺序解析：PostgreSQL 覆盖值 → 操作系统环境变量 → 代码默认值。读取通过 ETS 缓存提供；写入后显式刷新缓存。
-
-**`.env` 文件支持**——在仓库根目录放置 `.env.example` 风格的文件以提供本地覆盖。文件按以下顺序合并（后者优先，已有 OS 环境变量始终胜出）：
+BullX 会从仓库根目录加载 dotenv 文件。后加载的文件覆盖先加载的文件；已经存在的 OS 环境变量优先级高于 dotenv 文件中的值。
 
 | 环境 | 加载顺序 |
 |---|---|
-| 开发 | `.env` → `.env.development` → `.env.local` |
+| 开发 | `.env` → `.env.dev` → `.env.local` |
 | 测试 | `.env` → `.env.test` |
-| 生产 | `.env` → `.env.production` |
+| 生产 | `.env` → `.env.prod` |
 
-> `.env.local` 已加入 `.gitignore`，用于存放机器专属的密钥。`.env`、`.env.development` 和 `.env.test` 可作为团队共享的非密钥默认值提交到版本控制。
-
-**运行时值约束**——运行时配置项除基本类型外，还可声明 [Zoi](https://hex.pm/packages/zoi) Schema。若某个值不满足 Zoi 约束，该来源将被静默跳过，系统自动尝试回退链中的下一个来源。
-
-**在运行时修改配置：**
-
-```elixir
-# 将新值存入 PostgreSQL 并刷新本地 ETS 缓存
-BullX.Config.put("bullx.gateway_webhook_timeout_ms", "5000")
-
-# 删除覆盖值；配置项回退到 OS 环境变量或代码默认值
-BullX.Config.delete("bullx.gateway_webhook_timeout_ms")
-```
+> `.env.local` 已加入 `.gitignore`，用于存放机器专属的密钥。`.env`、`.env.dev` 和 `.env.test` 可作为团队共享的非密钥默认值提交到版本控制。

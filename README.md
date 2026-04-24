@@ -38,51 +38,68 @@ BullX is a highly available, self-evolving, and self-healing AI Agent Operating 
 
 ## Getting Started
 
-**Prerequisites:** Elixir 1.20+, PostgreSQL
+**Prerequisites:** Elixir 1.20+, PostgreSQL, Bun
+
+Make sure PostgreSQL is running and `DATABASE_URL` in `.env.dev` or `.env.local` points at it.
 
 ```sh
-# Install dependencies, set up the database, and build assets
+# Bootstrap Elixir deps, JS deps, database, and assets
 mix setup
 
-# Start the application (opens an IEx shell + HTTP server)
+# Start Phoenix; Vite runs as the development asset server
 iex -S mix phx.server
 ```
 
-Visit `http://localhost:4000`.
+Open `http://localhost:4000`.
+
+When the local `users` table is empty, `/` redirects to `/setup`. After at least one user exists, anonymous users are sent to `/sessions/new`, and signed-in users land on the control panel at `/`.
+
+In development, Phoenix starts Vite as an endpoint watcher. The browser entry point remains `http://localhost:4000`; Vite listens on `http://localhost:5173` for React/Inertia hot reload.
+If those ports are already in use, set `PORT` and `VITE_PORT` in `.env.local`, for example `PORT=4001` and `VITE_PORT=5174`.
+
+Useful project commands:
+
+```sh
+# Install/update JS dependencies
+bun install
+```
+
+```sh
+# Run the full project check used before committing
+mix precommit
+```
+
+## Vite Asset Builds
+
+The React/Inertia app entry is `assets/js/app.jsx`, with SPA pages under `assets/js/spas/`. For deployable assets, Vite writes `priv/static/assets/.vite/manifest.json`, and Phoenix resolves scripts and styles from that manifest outside development.
+Run Bun from the repository root; Vite uses `assets/` as its source root.
+
+```sh
+# Build Vite assets and manifest
+mix assets.build
+
+# Build production assets, including digests
+mix assets.deploy
+```
+
+`mix assets.deploy` runs compilation, the Vite build, and `phx.digest`. Run it before building a production release.
 
 **Production:**
 
 ```sh
+MIX_ENV=prod mix assets.deploy
 MIX_ENV=prod mix release
 _build/prod/rel/bullx/bin/bullx start
 ```
 
-## Configuration
+## Environment Files
 
-BullX has two configuration phases:
-
-**Bootstrap configuration** — values required before the application starts (database URL, port, secret key). These remain in the standard `config/*.exs` files and are read at startup through shared helpers in `config/support/bootstrap.exs`. They support `.env` file loading but do not read from PostgreSQL.
-
-**Runtime dynamic configuration** — values that can be changed without restarting. Declared with `BullX.Config` and resolved in this order: PostgreSQL override → OS environment → code default. Reads are served from an ETS cache; writes refresh the cache explicitly.
-
-**`.env` file support** — place a `.env.example`-style file at the repo root to provide local overrides. Files are merged in this order (later wins, existing OS env always wins):
+BullX loads dotenv files from the repository root. Later files override earlier ones; variables already present in the OS environment take precedence over dotenv values.
 
 | Environment | Load order |
 |---|---|
-| Development | `.env` → `.env.development` → `.env.local` |
+| Development | `.env` → `.env.dev` → `.env.local` |
 | Test | `.env` → `.env.test` |
-| Production | `.env` → `.env.production` |
+| Production | `.env` → `.env.prod` |
 
-> `.env.local` is gitignored and intended for machine-specific secrets. `.env`, `.env.development`, and `.env.test` may be committed as shared non-secret team defaults.
-
-**Runtime value constraints** — runtime settings may declare a [Zoi](https://hex.pm/packages/zoi) schema alongside their type. A value that fails the Zoi constraint is silently skipped and the next source in the fallback chain is tried.
-
-**Changing a runtime setting at runtime:**
-
-```elixir
-# Store a new value in PostgreSQL and refresh the local ETS cache
-BullX.Config.put("bullx.gateway_webhook_timeout_ms", "5000")
-
-# Remove an override; the setting falls back to OS env or default
-BullX.Config.delete("bullx.gateway_webhook_timeout_ms")
-```
+> `.env.local` is gitignored and intended for machine-specific secrets. `.env`, `.env.dev`, and `.env.test` may be committed as shared non-secret team defaults.

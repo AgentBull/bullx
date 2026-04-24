@@ -42,7 +42,7 @@ BullX is a single `:bullx` OTP application. Subsystems are placed on one of two 
 - **External dependencies.** No new package is added to `mix.exs`. The default dependency set from `mix phx.new` is sufficient for this RFC, and subsequent RFCs will add the libraries they need (Jido, etc.) as part of their own scope.
 - **Inner supervision.** Registries, `DynamicSupervisor`s, `Task.Supervisor`s, `GenServer`s — anything that would live *under* a subsystem supervisor — are deferred to the subsystem-specific RFC that implements behavior.
 - **Behavior.** No schema, migration, Ecto context, adapter implementation, LLM integration, prompt type, reasoning strategy, workflow engine, scheduler, consolidation job, skill, or frontend change belongs in this RFC.
-- **BullXWeb.** The existing Phoenix scaffold is left alone. The eventual migration to a JSON API + Vite SPA is a separate RFC.
+- **BullXWeb.** The existing Phoenix scaffold is left alone in this RFC. Later Web-specific plans may replace the asset pipeline and browser surface without changing RFC-0 subsystem scaffolding.
 - **packages/** is not touched. `packages/` is reserved for externally reusable libraries (e.g. `packages/feishu_openapi/`); BullX-internal subsystems live in `lib/` as L1 or L2 namespaces, never as separate mix projects.
 
 ## 4. Target structure

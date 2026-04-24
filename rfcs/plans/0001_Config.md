@@ -92,7 +92,7 @@ This is the mechanism by which the existing Phoenix/Ecto config files become par
 
 Static compile-time literals that are not deployment-specific may remain directly in config files. Examples include:
 
-- esbuild version and args
+- frontend asset tool versions and args
 - tailwind version and args
 - live reload regexes
 - static `force_ssl` structure in `config/prod.exs`

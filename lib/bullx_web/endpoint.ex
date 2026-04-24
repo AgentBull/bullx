@@ -8,6 +8,8 @@ defmodule BullXWeb.Endpoint do
     store: :cookie,
     key: "_bullx_key",
     signing_salt: "XwADcNPC",
+    http_only: true,
+    secure: Application.compile_env(:bullx, :session_cookie_secure, false),
     same_site: "Lax"
   ]
 

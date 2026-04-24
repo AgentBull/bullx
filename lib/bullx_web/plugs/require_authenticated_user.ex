@@ -15,7 +15,7 @@ defmodule BullXWeb.Plugs.RequireAuthenticatedUser do
   def call(conn, _opts) do
     conn
     |> put_flash(:error, "Sign in to continue.")
-    |> redirect(to: ~p"/login")
+    |> redirect(to: ~p"/sessions/new")
     |> halt()
   end
 end

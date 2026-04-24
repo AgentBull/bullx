@@ -15,6 +15,9 @@ defmodule BullXAccounts.AuthN do
   @allow_create_user "allow_create_user"
   @user_fields %{"email" => :email, "phone" => :phone, "username" => :username}
 
+  @spec setup_required?() :: boolean()
+  def setup_required?, do: not Repo.exists?(from user in User, select: 1)
+
   @spec resolve_channel_actor(atom() | String.t(), String.t(), String.t()) ::
           {:ok, User.t()} | {:error, :not_bound} | {:error, :user_banned}
   def resolve_channel_actor(adapter, channel_id, external_id) do

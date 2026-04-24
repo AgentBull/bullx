@@ -51,8 +51,8 @@ defmodule BullX.MixProject do
       {:lazy_html, ">= 0.1.0", only: :test},
       {:rustler, "~> 0.37.3", runtime: false},
       {:phoenix_live_dashboard, "~> 0.8.3"},
-      {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
-      {:tailwind, "~> 0.3", runtime: Mix.env() == :dev},
+      {:inertia, "~> 2.6"},
+      {:open_api_spex, "~> 3.22"},
       {:jido_signal, path: "/Users/ding/Projects/jido/jido_signal"},
       {:heroicons,
        github: "tailwindlabs/heroicons",
@@ -85,15 +85,14 @@ defmodule BullX.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
+      setup: ["deps.get", "ecto.setup", "cmd bun install", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
-      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind bullx", "esbuild bullx"],
+      "assets.build": ["compile", "cmd bun run build"],
       "assets.deploy": [
-        "tailwind bullx --minify",
-        "esbuild bullx --minify",
+        "compile",
+        "cmd bun run build",
         "phx.digest"
       ],
       precommit: [

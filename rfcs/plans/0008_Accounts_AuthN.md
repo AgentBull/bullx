@@ -38,7 +38,7 @@ Key decisions:
   - New L2 subsystem modules under `lib/bullx_accounts/`.
   - New AuthN tables: `users`, `user_channel_bindings`, `activation_codes`, and `user_channel_auth_codes`.
   - New configuration declarations under `BullX.Config.Accounts`.
-  - New Web login controller/view paths for provider login and channel-auth-code login.
+  - New Web login controller, route, and SPA entry paths for provider login and channel-auth-code login.
   - New one-shot bootstrap activation-code check during application startup.
   - Gateway adapter command handlers call BullXAccounts for `/preauth <code>` and `/web_auth`.
 - **Invariants that must remain true**
@@ -572,7 +572,7 @@ Tests must prove:
 18. User channel auth codes expire by TTL and are deleted on successful consumption.
 19. Web login stores only session identity and reloads the durable user on authenticated requests.
 20. Invalid email format and invalid phone number format are rejected at the changeset level; a valid phone is normalized to canonical E.164 before storage.
-21. `/logout` clears the session and redirects to `/login`.
+21. `DELETE /sessions` clears the session and redirects to `/sessions/new`.
 
 ## 12. Acceptance Criteria
 

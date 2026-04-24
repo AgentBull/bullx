@@ -1,8 +1,14 @@
 defmodule BullXWeb.SessionController do
   use BullXWeb, :controller
 
+  alias BullXAccounts.User
+
   def new(conn, _params) do
-    render(conn, :new, form: Phoenix.Component.to_form(%{}, as: :session))
+    case {BullXAccounts.setup_required?(), conn.assigns[:current_user]} do
+      {true, _current_user} -> redirect(conn, to: ~p"/setup")
+      {false, %User{}} -> redirect(conn, to: ~p"/")
+      {false, _missing_user} -> render_new(conn)
+    end
   end
 
   def create(conn, params) do
@@ -15,7 +21,7 @@ defmodule BullXWeb.SessionController do
     conn
     |> renew_session()
     |> put_flash(:info, "Signed out.")
-    |> redirect(to: ~p"/login")
+    |> redirect(to: ~p"/sessions/new")
   end
 
   defp consume_auth_code({:ok, auth_code}, conn) do
@@ -39,7 +45,7 @@ defmodule BullXWeb.SessionController do
   defp invalid_login(conn) do
     conn
     |> put_flash(:error, "Invalid or expired authentication code.")
-    |> redirect(to: ~p"/login")
+    |> redirect(to: ~p"/sessions/new")
   end
 
   defp auth_code_from_params(%{"session" => %{"auth_code" => auth_code}}),
@@ -61,8 +67,17 @@ defmodule BullXWeb.SessionController do
   defp normalize_auth_code(_auth_code), do: :error
 
   defp renew_session(conn) do
+    Plug.CSRFProtection.delete_csrf_token()
+
     conn
     |> configure_session(renew: true)
     |> clear_session()
+  end
+
+  defp render_new(conn) do
+    conn
+    |> assign(:page_title, "Sign In")
+    |> assign_prop(:form_action, ~p"/sessions")
+    |> render_inertia("sessions/New")
   end
 end

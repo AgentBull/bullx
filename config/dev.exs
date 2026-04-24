@@ -6,11 +6,7 @@ BullX.Config.Bootstrap.load_dotenv!(root: Path.expand("..", __DIR__), env: :dev)
 
 # Configure your database
 config :bullx, BullX.Repo,
-  url:
-    BullX.Config.Bootstrap.env_string(
-      "DATABASE_URL",
-      "postgresql://postgres:postgres@localhost:5432/bullx_dev"
-    ),
+  url: BullX.Config.Bootstrap.env!("DATABASE_URL", & &1),
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -21,16 +17,31 @@ config :bullx, BullX.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
+vite_port = BullX.Config.Bootstrap.env_integer("VITE_PORT", 5173)
+
+case vite_port in 1..65_535 do
+  true -> :ok
+  false -> raise "BullX.Config.Bootstrap: invalid port for VITE_PORT: #{inspect(vite_port)}"
+end
+
 config :bullx, BullXWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
+  static_url: [host: "localhost", port: vite_port],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:bullx, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:bullx, ~w(--watch)]}
+    vite:
+      {BullXWeb.Vite, :run,
+       [
+         ~w(run dev),
+         [
+           cd: Path.expand("..", __DIR__),
+           env: %{"MIX_BUILD_PATH" => Mix.Project.build_path()}
+         ]
+       ]}
   ]
 
 # ## SSL Support
@@ -61,8 +72,6 @@ config :bullx, BullXWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
     patterns: [
-      # Static assets, except user uploads
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
       # I18n translations
       ~r"priv/locales/.*\.toml$",
       # Router, Controllers, LiveViews and LiveComponents
@@ -91,6 +100,8 @@ config :phoenix_live_view,
   debug_attributes: true,
   # Enable helpful, but potentially expensive runtime checks
   enable_expensive_runtime_checks: true
+
+config :open_api_spex, :cache_adapter, OpenApiSpex.Plug.NoneCache
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false

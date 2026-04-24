@@ -9,7 +9,6 @@ defmodule BullXAccounts.Bootstrap do
 
   alias BullX.Repo
   alias BullXAccounts.ActivationCode
-  alias BullXAccounts.User
 
   def start_link(_opts), do: Task.start_link(__MODULE__, :run, [])
 
@@ -27,7 +26,7 @@ defmodule BullXAccounts.Bootstrap do
   end
 
   defp maybe_create_bootstrap_activation_code do
-    case {users_empty?(), valid_activation_code_exists?()} do
+    case {BullXAccounts.setup_required?(), valid_activation_code_exists?()} do
       {true, false} ->
         create_and_log_bootstrap_activation_code()
 
@@ -47,8 +46,6 @@ defmodule BullXAccounts.Bootstrap do
         )
     end
   end
-
-  defp users_empty?, do: not Repo.exists?(from user in User, select: 1)
 
   defp valid_activation_code_exists? do
     now = DateTime.utc_now()

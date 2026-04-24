@@ -40,6 +40,7 @@ defmodule BullXWeb do
     quote do
       use Phoenix.Controller, formats: [:html, :json]
 
+      import Inertia.Controller
       import Plug.Conn
       import BullXWeb.I18n.HTML, only: [t: 1, t: 2, t: 3]
 
@@ -66,6 +67,8 @@ defmodule BullXWeb do
   def html do
     quote do
       use Phoenix.Component
+
+      import Inertia.HTML
 
       # Import convenience functions from controllers
       import Phoenix.Controller,

@@ -5,6 +5,7 @@ defmodule BullXWeb.Router do
     plug :accepts, ["html"]
     plug :fetch_session
     plug BullXWeb.Plugs.FetchCurrentUser
+    plug Inertia.Plug
     plug :fetch_live_flash
     plug :put_root_layout, html: {BullXWeb.Layouts, :root}
     plug :protect_from_forgery
@@ -13,21 +14,37 @@ defmodule BullXWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+    plug OpenApiSpex.Plug.PutApiSpec, module: BullXWeb.ApiSpec
+  end
+
+  pipeline :health do
+    plug :accepts, ["json"]
   end
 
   scope "/", BullXWeb do
     pipe_through :browser
 
     get "/", PageController, :home
-    get "/login", SessionController, :new
-    post "/login", SessionController, :create
-    delete "/logout", SessionController, :delete
+    get "/setup", SetupController, :show
+    get "/sessions/new", SessionController, :new
+    post "/sessions", SessionController, :create
+    delete "/sessions", SessionController, :delete
+    get "/sessions/feishu", FeishuAuthController, :new
+    get "/sessions/feishu/callback", FeishuAuthController, :callback
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", BullXWeb do
-  #   pipe_through :api
-  # end
+  scope "/", BullXWeb do
+    pipe_through :health
+
+    get "/livez", HealthController, :livez
+    get "/readyz", HealthController, :readyz
+  end
+
+  scope "/" do
+    pipe_through :api
+
+    get "/.well-known/service-desc", OpenApiSpex.Plug.RenderSpec, []
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:bullx, :dev_routes) do
@@ -43,6 +60,7 @@ defmodule BullXWeb.Router do
 
       live_dashboard "/dashboard", metrics: BullXWeb.Telemetry
       forward "/mailbox", Plug.Swoosh.MailboxPreview
+      get "/swaggerui", OpenApiSpex.Plug.SwaggerUI, path: "/.well-known/service-desc"
     end
   end
 end
