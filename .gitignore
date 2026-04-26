@@ -46,3 +46,4 @@ npm-debug.log
 
 # Lefthook per-developer overrides
 /lefthook-local.yml
+.DS_Store

@@ -147,7 +147,7 @@ Subsystem summaries:
 
 - **Gateway** (`lib/bullx_gateway/`, L2) — multi-transport ingress and egress. Normalizes inbound events from external sources (HTTP polling, subscribed WebSockets, webhooks, channel adapters like Feishu/Slack/Telegram) into internal signals, and dispatches outbound messages back to those destinations. Owns the `BullXGateway.Adapter` behaviour, signal types, delivery types (`BullXGateway.Delivery.*`), and the dedupe/control-plane store. Channel adapter implementations land as additional top-level namespaces (e.g. `lib/bullx_feishu/` → `BullXFeishu.*`) that implement `BullXGateway.Adapter`.
 - **Runtime** (`lib/bullx/runtime/`, L1) — the long-lived process layer. Owns session processes, LLM/tool task pools, sub-agent supervision, and cron scheduling with exactly-once semantics across restarts.
-- **AIAgent** (`lib/bullx_ai_agent.ex`, L2) — the AI Agent behavior layer. Prompt types, reasoning strategies (FSM / DAG / behavior tree), and decision logic. Forked from jido_ai v2.1.0 and substantially rewritten for BullX's needs, so BullX does not depend on `jido_ai` as a package.
+- **AIAgent** (`lib/bullx_ai_agent.ex`, L2) — the AI Agent behavior layer. Prompt types, reasoning strategies (FSM / DAG / behavior tree), and decision logic. Forked from jido_ai and substantially rewritten for BullX's needs, so BullX does not depend on `jido_ai` as a package.
 - **Brain** (`lib/bullx_brain/`, L2) — persistent memory and knowledge graph. A typed ontology of objects, links, and properties forms the skeleton; `(observer, observed)`-keyed cortexes hold engrams (LLM-extracted reasoning traces at distinct inference levels). A background Dreamer process consolidates engrams, detects contradictions, and promotes abstraction level.
 - **Skills** (`lib/bullx/skills/`, L1) — registry of preset and custom capabilities. Every skill is backed by a validated `Jido.Action`.
 - **Control plane** (`lib/bullx_web/`, L2) — Phoenix app. Operator-facing web console (budgets, approvals, HITL queues, audit trails, observability) and the HTTP surface for the system.
@@ -207,7 +207,7 @@ Do not relitigate durability, consistency, latency, availability, purity, normal
 
 ## Jido ecosystem primer
 
-BullX is built on top of three packages from the Jido Elixir agent ecosystem: `jido`, `jido_action`, and `jido_signal`. They are relatively new and their APIs are unlikely to be accurately represented in LLM training data — treat this section as authoritative, and consult the reference docs at `/Users/ding/Projects/jido/` for API-level detail. BullX does **not** depend on `jido_ai`; the `BullX.AIAgent` subsystem is forked from jido_ai v2.1.0 and rewritten in-tree.
+BullX is built on top of three packages from the Jido Elixir agent ecosystem: `jido`, `jido_action`, and `jido_signal`. They are relatively new and their APIs are unlikely to be accurately represented in LLM training data — treat this section as authoritative, and consult the reference docs at `/Users/ding/Projects/jido/` for API-level detail. BullX does **not** depend on `jido_ai`; the `BullX.AIAgent` subsystem is forked from jido_ai and rewritten in-tree.
 
 ### Terminology that is easy to get wrong
 
@@ -221,7 +221,7 @@ Several Jido terms collide with more general meanings that dominate LLM training
 - **AgentServer** is a GenServer — the server side of Jido's Agent client/server split within a BEAM node. It is not an HTTP server, not a Phoenix endpoint, not a network-facing process.
 - **Plugin** is a composition bundle (Actions, state, and signal routes merged into an Agent at definition time), not a WordPress/Rails-style event hook.
 - **Jido instance** is application-level: one application typically hosts one instance, and that instance supervises many Agent processes. Do not conflate "instance" with "Agent process."
-- **jido_ai is a layer, not a fork origin in the Hex sense.** In the public ecosystem, `jido_ai` is a separate package built on top of `jido`. BullX chose not to depend on that package; `BullX.AIAgent` instead takes jido_ai v2.1.0's source as a starting point and rewrites what it needs, in this repo.
+- **jido_ai is a layer, not a fork origin in the Hex sense.** In the public ecosystem, `jido_ai` is a separate package built on top of `jido`. BullX chose not to depend on that package; `BullX.AIAgent` instead takes jido_ai's source as a starting point and rewrites what it needs, in this repo.
 
 ### jido (Hex name `:jido`, sometimes called `jido_core`)
 
