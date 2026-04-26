@@ -1,0 +1,32 @@
+[web.sessions.new]
+title = "Sign In"
+brand = "BullX"
+subtitle = "Session SPA"
+placeholder = "Login screen placeholder. Auth-code submission will post to {$form_action}."
+
+[web.setup]
+title = "Setup"
+heading = "Initial setup wizard"
+description = "This SPA is available only while the Users table is empty. The first-user setup flow will live here."
+placeholder = "Setup form placeholder"
+
+[web.control_panel]
+title = "Control Panel"
+subtitle = "Control Panel SPA"
+status = "Authenticated"
+heading = "Operator console"
+api_title = "API"
+openapi_json = "OpenAPI JSON"
+swagger_ui = "Swagger UI"
+
+[web.control_panel.sections.sessions]
+title = "Sessions"
+description = "Active runtime sessions will be managed here."
+
+[web.control_panel.sections.approvals]
+title = "Approvals"
+description = "Human-in-the-loop queues will be managed here."
+
+[web.control_panel.sections.observability]
+title = "Observability"
+description = "Gateway, runtime, and brain health will be shown here."

@@ -10,16 +10,16 @@ defmodule BullX.I18n.Resolver do
   The chain order, per RFC 0007 §4.4:
 
   1. The requested locale.
-  2. Same-language parents via BCP 47 truncation (`zh-Hans-CN →
-     zh-Hans → zh`).
-  3. `__meta__.fallback` from the requested locale's TOML, if any.
-  4. Same-language parents of that meta fallback.
-  5. The application default locale.
-  6. Same-language parents of the default locale.
-  7. `:"en-US"` as the final backstop.
+  2. `__meta__.fallback` from the requested locale's TOML, if any.
+  3. The application default locale.
+  4. `:"en-US"` as the final backstop.
 
-  Every step is filtered against the set of loaded locales, so
-  nonexistent parents never appear in the chain.
+  Every step is filtered against the set of loaded locales. BullX
+  does not derive same-language parent tags via BCP 47 truncation:
+  loaded locales are always full tags like `zh-Hans-CN` or `en-US`.
+  If a deployment wants a less-specific Chinese locale to satisfy
+  `zh-Hans-CN` keys, it must add that locale's TOML and declare it
+  as `__meta__.fallback`.
   """
 
   @messages_prefix {:bullx_i18n, :messages}
@@ -133,33 +133,25 @@ defmodule BullX.I18n.Resolver do
 
   defp build_chain(locale) do
     loaded = loaded()
-    default = default_locale_atom(loaded)
-    default_fallback = @default_fallback
 
-    ([locale] ++
-       loaded_parents(locale, loaded) ++
-       meta_fallback_chain(locale) ++
-       [default] ++
-       loaded_parents(default, loaded) ++
-       [default_fallback] ++
-       loaded_parents(default_fallback, loaded))
+    [
+      locale,
+      meta_fallback_atom(locale, loaded),
+      default_locale_atom(loaded),
+      @default_fallback
+    ]
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.filter(&MapSet.member?(loaded, &1))
   end
 
-  defp meta_fallback_chain(locale) do
+  defp meta_fallback_atom(locale, loaded) do
     case meta(locale) do
       %{fallback: fallback} when is_binary(fallback) ->
-        loaded = loaded()
-
-        case exact_loaded_locale(fallback, loaded) do
-          nil -> []
-          atom -> [atom | loaded_parents(atom, loaded)]
-        end
+        exact_loaded_locale(fallback, loaded)
 
       _ ->
-        []
+        nil
     end
   end
 
@@ -174,17 +166,6 @@ defmodule BullX.I18n.Resolver do
     end
   end
 
-  defp loaded_parents(locale, loaded) when is_atom(locale) do
-    locale
-    |> Atom.to_string()
-    |> String.split("-")
-    |> ancestors()
-    |> Enum.map(&exact_loaded_locale(&1, loaded))
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp loaded_parents(_locale, _loaded), do: []
-
   defp exact_loaded_locale(locale, loaded) when is_atom(locale) do
     if MapSet.member?(loaded, locale), do: locale
   end
@@ -196,36 +177,4 @@ defmodule BullX.I18n.Resolver do
   end
 
   defp exact_loaded_locale(_locale, _loaded), do: nil
-
-  @doc """
-  Same-language parents of `locale` via BCP 47 truncation, most
-  specific first.
-
-  `:"zh-Hans-CN"` → `[:"zh-Hans", :zh]`
-  `:"en-US"` → `[:en]`
-  `:en` → `[]`
-  """
-  @spec parents(atom()) :: [atom()]
-  def parents(locale) when is_atom(locale) do
-    locale
-    |> Atom.to_string()
-    |> String.split("-")
-    |> ancestors()
-    |> Enum.map(&String.to_atom/1)
-  end
-
-  def parents(_), do: []
-
-  defp ancestors([_single]), do: []
-
-  defp ancestors(segments) when is_list(segments) do
-    segments
-    |> Enum.reverse()
-    |> Enum.drop(1)
-    |> Enum.reverse()
-    |> case do
-      [] -> []
-      parent -> [Enum.join(parent, "-") | ancestors(parent)]
-    end
-  end
 end

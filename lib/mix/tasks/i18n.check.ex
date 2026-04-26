@@ -7,6 +7,9 @@ defmodule Mix.Tasks.I18n.Check do
 
     * Every locale under `priv/locales/*.toml` parses as TOML and
       normalises through `BullX.I18n.Normalizer` without errors.
+    * Every locale under `priv/locales/client/*.toml` is validated
+      with the same parser and normaliser when the client catalog
+      directory exists.
     * The source locale (`en-US`) exists.
     * Every non-source locale's key set is a subset of the source
       locale's key set.
@@ -25,27 +28,64 @@ defmodule Mix.Tasks.I18n.Check do
   def run(argv) do
     {opts, _, _} =
       OptionParser.parse(argv,
-        strict: [dir: :string]
+        strict: [client_dir: :string, dir: :string]
       )
 
     dir = Keyword.get(opts, :dir, "priv/locales")
+    client_dir = Keyword.get(opts, :client_dir, Path.join(dir, "client"))
+    require_client_dir? = Keyword.has_key?(opts, :client_dir) or File.dir?(client_dir)
 
-    locales =
-      try do
-        Loader.load_all(dir)
-      rescue
-        exception ->
-          die(Exception.message(exception))
-      end
+    server = validate_catalog!("server", dir, required?: true)
+    client = validate_catalog!("client", client_dir, required?: require_client_dir?)
+    drift = server.drift ++ client.drift
 
-    if locales == %{} do
-      die("no locale files found in #{dir}")
+    case drift do
+      [] ->
+        Mix.shell().info(ok_message(server, client))
+
+      errors ->
+        Mix.shell().error("i18n.check failed:")
+        Enum.each(errors, &Mix.shell().error("  - " <> &1))
+        die("#{length(errors)} drift issue(s)")
     end
+  end
 
-    unless Map.has_key?(locales, @source_locale) do
-      die("source locale #{inspect(@source_locale)} not found in #{dir}")
+  defp validate_catalog!(label, dir, opts) do
+    required? = Keyword.fetch!(opts, :required?)
+    locales = load_locales!(label, dir)
+
+    cond do
+      locales == %{} and required? ->
+        die("no #{label} locale files found in #{dir}")
+
+      locales == %{} ->
+        %{label: label, dir: dir, locales: locales, source_count: 0, drift: []}
+
+      not Map.has_key?(locales, @source_locale) ->
+        die("#{label} source locale #{inspect(@source_locale)} not found in #{dir}")
+
+      true ->
+        drift = catalog_drift(label, locales)
+
+        %{
+          label: label,
+          dir: dir,
+          locales: locales,
+          source_count:
+            locales |> Map.fetch!(@source_locale) |> Map.fetch!(:messages) |> map_size(),
+          drift: drift
+        }
     end
+  end
 
+  defp load_locales!(label, dir) do
+    Loader.load_all(dir)
+  rescue
+    exception ->
+      die("#{label} catalog in #{dir}: #{Exception.message(exception)}")
+  end
+
+  defp catalog_drift(label, locales) do
     source_keys = locales |> Map.fetch!(@source_locale) |> Map.fetch!(:messages) |> Map.keys()
     source_set = MapSet.new(source_keys)
 
@@ -54,40 +94,39 @@ defmodule Mix.Tasks.I18n.Check do
         {key, mf2_variables(message)}
       end
 
-    drift =
-      locales
-      |> Enum.reject(fn {locale, _} -> locale == @source_locale end)
-      |> Enum.flat_map(fn {locale, %{messages: messages}} ->
-        keys = messages |> Map.keys() |> MapSet.new()
-        extra = MapSet.difference(keys, source_set)
+    locales
+    |> Enum.reject(fn {locale, _} -> locale == @source_locale end)
+    |> Enum.flat_map(fn {locale, %{messages: messages}} ->
+      keys = messages |> Map.keys() |> MapSet.new()
+      extra = MapSet.difference(keys, source_set)
 
-        extra_errors =
-          for key <- Enum.sort(extra) do
-            "#{locale}: key #{inspect(key)} not present in source locale #{inspect(@source_locale)}"
-          end
+      extra_errors =
+        for key <- Enum.sort(extra) do
+          "#{label}: #{locale}: key #{inspect(key)} not present in source locale #{inspect(@source_locale)}"
+        end
 
-        var_errors =
-          for {key, message} <- messages,
-              MapSet.member?(source_set, key),
-              mismatch = variable_mismatch(source_vars, key, message),
-              mismatch != nil do
-            "#{locale}: key #{inspect(key)} — #{mismatch}"
-          end
+      var_errors =
+        for {key, message} <- messages,
+            MapSet.member?(source_set, key),
+            mismatch = variable_mismatch(source_vars, key, message),
+            mismatch != nil do
+          "#{label}: #{locale}: key #{inspect(key)} — #{mismatch}"
+        end
 
-        extra_errors ++ var_errors
-      end)
+      extra_errors ++ var_errors
+    end)
+  end
 
-    case drift do
-      [] ->
-        Mix.shell().info(
-          "i18n.check: #{map_size(locales)} locale(s), #{MapSet.size(source_set)} source key(s) — OK"
-        )
+  defp ok_message(server, %{locales: locales}) when locales == %{} do
+    "i18n.check: #{summary(server)} — OK"
+  end
 
-      errors ->
-        Mix.shell().error("i18n.check failed:")
-        Enum.each(errors, &Mix.shell().error("  - " <> &1))
-        die("#{length(errors)} drift issue(s)")
-    end
+  defp ok_message(server, client) do
+    "i18n.check: #{summary(server)}; #{summary(client)} — OK"
+  end
+
+  defp summary(%{label: label, locales: locales, source_count: source_count}) do
+    "#{label} #{map_size(locales)} locale(s), #{source_count} source key(s)"
   end
 
   defp variable_mismatch(source_vars, key, translation) do

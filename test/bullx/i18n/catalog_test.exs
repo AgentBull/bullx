@@ -68,6 +68,15 @@ defmodule BullX.I18n.CatalogTest do
     assert Resolver.meta(:"xx-Test") == %{}
   end
 
+  test "catalog reload ignores client locale TOMLs" do
+    log =
+      capture_log([level: :error], fn ->
+        assert I18n.t("web.sessions.new.title", %{}, locale: :"en-US") == "web.sessions.new.title"
+      end)
+
+    assert log =~ "i18n missing" or log =~ "i18n_missing"
+  end
+
   defp fallback_log_count(log) do
     ~r/i18n fallback|i18n_fallback/
     |> Regex.scan(log)

@@ -23,4 +23,23 @@ defmodule BullXWeb.I18n.HTML do
 
   @spec t(String.t(), BullX.I18n.bindings(), BullX.I18n.opts()) :: String.t()
   def t(key, bindings, opts), do: BullX.I18n.t(key, bindings, opts)
+
+  @doc """
+  Returns the active BCP 47 locale for the root `<html lang>` attribute.
+  """
+  @spec lang() :: String.t()
+  def lang do
+    BullX.I18n.default_locale()
+    |> BullX.I18n.Resolver.language_tag_to_locale()
+    |> Atom.to_string()
+  end
+
+  @doc """
+  Returns the writing direction for the active locale.
+
+  BullX currently ships only LTR locales. This helper is the single
+  hook point for the first RTL locale.
+  """
+  @spec dir() :: String.t()
+  def dir, do: "ltr"
 end

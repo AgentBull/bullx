@@ -1,0 +1,32 @@
+[web.sessions.new]
+title = "登录"
+brand = "BullX"
+subtitle = "会话 SPA"
+placeholder = "登录页面占位内容。验证码提交将发送到 {$form_action}。"
+
+[web.setup]
+title = "初始化"
+heading = "初始设置向导"
+description = "此 SPA 仅在 Users 表为空时可用。首个用户设置流程将在这里实现。"
+placeholder = "设置表单占位内容"
+
+[web.control_panel]
+title = "控制台"
+subtitle = "控制台 SPA"
+status = "已认证"
+heading = "操作员控制台"
+api_title = "API"
+openapi_json = "OpenAPI JSON"
+swagger_ui = "Swagger UI"
+
+[web.control_panel.sections.sessions]
+title = "会话"
+description = "这里将管理活跃的运行时会话。"
+
+[web.control_panel.sections.approvals]
+title = "审批"
+description = "这里将管理人工介入队列。"
+
+[web.control_panel.sections.observability]
+title = "可观测性"
+description = "这里将展示 Gateway、Runtime 和 Brain 的健康状态。"

@@ -1,6 +1,8 @@
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
+import toml from "@iarna/toml"
 import { defineConfig } from "vite"
+import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -8,16 +10,21 @@ const assetsRoot = dirname(fileURLToPath(import.meta.url))
 const appRoot = resolve(assetsRoot, "..")
 const mixEnv = process.env.MIX_ENV || "dev"
 const mixBuildPath = process.env.MIX_BUILD_PATH || resolve(appRoot, "_build", mixEnv)
-const vitePort = parsePort(process.env.VITE_PORT || "5173")
+const phoenixPort = parsePort(process.env.PORT || "4000", "PORT")
+const vitePort = parsePort(process.env.VITE_PORT || "5173", "VITE_PORT")
 
-function parsePort(raw) {
+function parsePort(raw, envVar) {
   const port = Number.parseInt(raw, 10)
 
   if (Number.isNaN(port) || String(port) !== raw || port < 1 || port > 65535) {
-    throw new Error(`Invalid VITE_PORT: ${raw}`)
+    throw new Error(`Invalid ${envVar}: ${raw}`)
   }
 
   return port
+}
+
+function localOrigins(port) {
+  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`]
 }
 
 function phoenixPlugin({ pattern } = {}) {
@@ -37,6 +44,39 @@ function phoenixPlugin({ pattern } = {}) {
   }
 }
 
+function tomlPlugin() {
+  return {
+    name: "bullx-toml",
+    transform(_src, id) {
+      if (!id.endsWith(".toml")) return null
+
+      const raw = readFileSync(id, "utf8")
+
+      return {
+        code: `export default ${JSON.stringify(toml.parse(raw))}`,
+        map: null,
+      }
+    },
+  }
+}
+
+function clientLocalesPlugin() {
+  const clientLocalesPattern = /priv\/locales\/client\/[^/]+\.toml$/
+
+  return {
+    name: "bullx-client-locales",
+    configureServer(server) {
+      server.watcher.add(resolve(appRoot, "priv/locales/client/*.toml"))
+    },
+    handleHotUpdate({ file, server }) {
+      if (!file.match(clientLocalesPattern)) return
+
+      server.ws.send({ type: "full-reload" })
+      return []
+    },
+  }
+}
+
 export default defineConfig({
   root: assetsRoot,
   cacheDir: resolve(appRoot, "node_modules/.vite"),
@@ -45,7 +85,7 @@ export default defineConfig({
     port: vitePort,
     strictPort: true,
     cors: {
-      origin: ["http://localhost:4000", "http://127.0.0.1:4000"],
+      origin: localOrigins(phoenixPort),
     },
     fs: {
       allow: [appRoot, mixBuildPath],
@@ -73,6 +113,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(assetsRoot, "js"),
+      "@locales": resolve(appRoot, "priv/locales/client"),
       phoenix: resolve(appRoot, "deps/phoenix/priv/static/phoenix.mjs"),
       phoenix_html: resolve(appRoot, "deps/phoenix_html/priv/static/phoenix_html.js"),
       phoenix_live_view: resolve(
@@ -88,5 +129,7 @@ export default defineConfig({
     phoenixPlugin({
       pattern: /\.(ex|heex)$/,
     }),
+    tomlPlugin(),
+    clientLocalesPlugin(),
   ],
 })
