@@ -87,9 +87,6 @@ defmodule BullXFeishu.DirectCommand do
         {:error, :already_bound} ->
           BullX.I18n.t("gateway.feishu.auth.already_linked")
 
-        {:error, :auto_match_available} ->
-          BullX.I18n.t("gateway.feishu.auth.auto_match_available")
-
         {:error, :user_banned} ->
           BullX.I18n.t("gateway.feishu.auth.denied")
 

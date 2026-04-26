@@ -4,6 +4,7 @@ defmodule BullX.ApplicationTest do
   @required_processes [
     BullX.Config.Supervisor,
     BullX.Config.Cache,
+    BullXAccounts.AuthZ.Cache,
     BullX.Skills.Supervisor,
     BullXBrain.Supervisor,
     BullX.Runtime.Supervisor,

@@ -7,7 +7,6 @@ defmodule BullXFeishu.LocaleTest do
     "gateway.feishu.auth.activation_code_invalid",
     "gateway.feishu.auth.activation_failed",
     "gateway.feishu.auth.already_linked",
-    "gateway.feishu.auth.auto_match_available",
     "gateway.feishu.auth.web_auth_created",
     "gateway.feishu.auth.web_auth_not_bound",
     "gateway.feishu.auth.web_auth_failed",

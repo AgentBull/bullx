@@ -97,7 +97,6 @@ activation_success = "Activation complete. This Feishu account is now linked to 
 activation_code_invalid = "That activation code is invalid or expired."
 activation_failed = "Activation failed. Please try again or ask an operator for a new code."
 already_linked = "This Feishu account is already linked."
-auto_match_available = "This Feishu account can be matched automatically. Please sign in again."
 web_auth_created = "Use this login code: {$code}\nOpen {$login_url} to finish signing in."
 web_auth_not_bound = "This Feishu account is not linked yet. Activate it with /preauth <code> first."
 web_auth_failed = "Feishu login could not be started. Please try again later."

@@ -10,6 +10,7 @@ mod crypto {
   pub mod blake3;
 }
 
+mod cedar;
 mod encoding;
 mod phone;
 

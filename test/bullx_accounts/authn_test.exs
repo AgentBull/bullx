@@ -31,6 +31,26 @@ defmodule BullXAccounts.AuthNTest do
     assert resolved.id == user.id
   end
 
+  test "nil and boolean channel identifiers are rejected instead of persisted as strings" do
+    for value <- [nil, true, false] do
+      assert {:error, :invalid_identifier} =
+               BullXAccounts.resolve_channel_actor(:feishu, "main", value)
+
+      assert {:error, :invalid_identifier} =
+               BullXAccounts.match_or_create_from_channel(%{
+                 adapter: :feishu,
+                 channel_id: "main",
+                 external_id: value,
+                 profile: %{"display_name" => "Bad Identifier"}
+               })
+    end
+
+    refute Repo.exists?(
+             from binding in UserChannelBinding,
+               where: binding.external_id in ["nil", "true", "false"]
+           )
+  end
+
   test "banned users fail channel resolution and web auth-code issuance" do
     user = insert_user!(display_name: "Alice", status: :banned)
     insert_binding!(user, adapter: "feishu", channel_id: "main", external_id: "ou_1")
@@ -145,6 +165,47 @@ defmodule BullXAccounts.AuthNTest do
     assert binding.user_id == user.id
   end
 
+  test "concurrent first contact for the same actor resolves to one binding" do
+    put_accounts_config(authn_auto_create_users: true, authn_require_activation_code: false)
+
+    input = %{
+      adapter: :feishu,
+      channel_id: "main",
+      external_id: "ou_same_actor",
+      profile: %{"display_name" => "Same Actor"}
+    }
+
+    test_pid = self()
+
+    tasks =
+      for _i <- 1..8 do
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Repo, test_pid, self())
+          BullXAccounts.match_or_create_from_channel(input)
+        end)
+      end
+
+    results = Enum.map(tasks, &Task.await/1)
+
+    assert Enum.all?(results, &match?({:ok, _user, _binding}, &1))
+
+    binding_ids =
+      results
+      |> Enum.map(fn {:ok, _user, binding} -> binding.id end)
+      |> Enum.uniq()
+
+    assert length(binding_ids) == 1
+
+    assert Repo.aggregate(
+             from(binding in UserChannelBinding,
+               where:
+                 binding.adapter == "feishu" and binding.channel_id == "main" and
+                   binding.external_id == "ou_same_actor"
+             ),
+             :count
+           ) == 1
+  end
+
   test "auto_create_users=false returns :activation_required for both rule-matched and unmatched flows" do
     put_accounts_config(
       authn_auto_create_users: false,
@@ -191,7 +252,7 @@ defmodule BullXAccounts.AuthNTest do
     assert {:error, :already_bound} = BullXAccounts.consume_activation_code(code, input)
   end
 
-  test "activation code is not consumed when automatic matching is available" do
+  test "activation code consumption uses automatic matching without consuming the code" do
     user = insert_user!(display_name: "Alice", email: "alice@example.com")
 
     put_accounts_config(
@@ -208,12 +269,14 @@ defmodule BullXAccounts.AuthNTest do
     assert {:ok, %{code: code, activation_code: activation_code}} =
              BullXAccounts.create_activation_code(nil, %{})
 
-    assert {:error, :auto_match_available} =
+    assert {:ok, resolved, binding} =
              BullXAccounts.consume_activation_code(
                code,
                channel_input("ou_match", profile: %{"email" => user.email})
              )
 
+    assert resolved.id == user.id
+    assert binding.user_id == user.id
     assert Repo.get!(ActivationCode, activation_code.id).used_at == nil
   end
 

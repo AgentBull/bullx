@@ -104,6 +104,8 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.ToolExec do
   alias BullXAIAgent.Turn
   alias Jido.Tracing.Context, as: TraceContext
 
+  require Logger
+
   def exec(directive, _input_signal, state) do
     %{
       id: call_id,
@@ -446,10 +448,14 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.ToolExec do
 
     Jido.AgentServer.cast(agent_pid, signal)
   rescue
-    _ -> :ok
+    exception ->
+      Logger.warning(
+        "BullXAIAgent.ToolExec: failed to emit tool started signal call_id=#{inspect(call_id)} tool_name=#{inspect(tool_name)} reason=#{Exception.message(exception)}"
+      )
+
+      :ok
   end
 
-  # Sends tool result signal, with fallback for signal construction failures
   defp send_tool_result(agent_pid, call_id, tool_name, result, metadata) do
     signal =
       Signal.ToolResult.new!(%{
@@ -462,7 +468,10 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.ToolExec do
     Jido.AgentServer.cast(agent_pid, signal)
   rescue
     e ->
-      # If signal construction fails, try with a minimal error signal
+      Logger.warning(
+        "BullXAIAgent.ToolExec: failed to emit tool result signal call_id=#{inspect(call_id)} tool_name=#{inspect(tool_name)} reason=#{Exception.message(e)}"
+      )
+
       fallback_signal =
         Signal.ToolResult.new!(%{
           call_id: call_id,

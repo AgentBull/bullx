@@ -34,9 +34,6 @@ defmodule BullXAIAgent.Actions.ToolCalling.ListTools do
           |> Zoi.optional(),
         include_schema:
           Zoi.boolean(description: "Include tool schemas in result") |> Zoi.default(true),
-        include_sensitive:
-          Zoi.boolean(description: "Include tools marked as sensitive (default: false)")
-          |> Zoi.default(false),
         allowed_tools:
           Zoi.list(Zoi.string(),
             description: "Allowlist of tool names to include (all others excluded)"
@@ -60,7 +57,6 @@ defmodule BullXAIAgent.Actions.ToolCalling.ListTools do
 
       tools =
         all_tools
-        |> filter_sensitive_tools(validated_params[:include_sensitive])
         |> filter_by_allowlist(validated_params[:allowed_tools])
         |> filter_by_name(validated_params[:filter])
         |> format_tools(validated_params[:include_schema] != false)
@@ -69,8 +65,7 @@ defmodule BullXAIAgent.Actions.ToolCalling.ListTools do
        %{
          tools: tools,
          count: length(tools),
-         filter: validated_params[:filter],
-         sensitive_excluded: not (validated_params[:include_sensitive] == true)
+         filter: validated_params[:filter]
        }}
     end
   end
@@ -128,39 +123,6 @@ defmodule BullXAIAgent.Actions.ToolCalling.ListTools do
   end
 
   defp validate_allowed_tools_if_present(_), do: {:error, :invalid_allowed_tools}
-
-  # Filter out sensitive tools unless explicitly requested
-  defp filter_sensitive_tools(tools, true), do: tools
-
-  defp filter_sensitive_tools(tools, _include_sensitive) when is_list(tools) do
-    Enum.filter(tools, fn {name, _module} ->
-      not sensitive_tool?(name)
-    end)
-  end
-
-  # Tools that should be excluded by default
-  defp sensitive_tool?(name) when is_binary(name) do
-    lower_name = String.downcase(name)
-
-    Enum.any?(
-      [
-        "system",
-        "admin",
-        "config",
-        "registry",
-        "exec",
-        "shell",
-        "file",
-        "delete",
-        "destroy",
-        "secret",
-        "password",
-        "token",
-        "auth"
-      ],
-      fn keyword -> String.contains?(lower_name, keyword) end
-    )
-  end
 
   defp filter_by_allowlist(tools, nil), do: tools
 

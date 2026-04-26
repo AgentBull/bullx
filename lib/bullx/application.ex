@@ -11,6 +11,8 @@ defmodule BullX.Application do
       BullXWeb.Telemetry,
       BullX.Repo,
       BullX.Config.Supervisor,
+      BullXAccounts.AuthZ.Cache,
+      BullXAccounts.AuthZ.Bootstrap,
       BullXAccounts.Bootstrap,
       BullX.I18n.Catalog,
       {DNSCluster, query: Application.get_env(:bullx, :dns_cluster_query) || :ignore},

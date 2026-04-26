@@ -717,7 +717,6 @@ Result mapping:
 | `{:ok, _user, _binding}` | `gateway.feishu.auth.activation_success` |
 | `{:error, :invalid_or_expired_code}` | `gateway.feishu.auth.activation_code_invalid` |
 | `{:error, :already_bound}` | `gateway.feishu.auth.already_linked` |
-| `{:error, :auto_match_available}` | `gateway.feishu.auth.auto_match_available` |
 | `{:error, :user_banned}` | `gateway.feishu.auth.denied` |
 | any other `{:error, _}` | `gateway.feishu.auth.activation_failed` |
 
@@ -995,7 +994,6 @@ activation_success = "..."
 activation_code_invalid = "..."
 activation_failed = "..."
 already_linked = "..."
-auto_match_available = "..."
 web_auth_created = "..."
 web_auth_not_bound = "..."
 web_auth_failed = "..."
@@ -1056,7 +1054,7 @@ Add tests under `test/bullx_feishu/` for:
 - Early self-sent bot message filtering.
 - Account gate outcomes.
 - `/ping` direct command bypasses account gate, enqueues a Gateway Delivery, and renders `PONG!`.
-- `/preauth` direct command, including `:invalid_or_expired_code`, `:already_bound`, `:auto_match_available`, and `:user_banned`.
+- `/preauth` direct command, including `:invalid_or_expired_code`, `:already_bound`, and `:user_banned`.
 - `/web_auth` direct command using `issue_user_channel_auth_code/3`.
 - Group-chat rejection for `/preauth` and `/web_auth`.
 - Delivery send/edit degradation.

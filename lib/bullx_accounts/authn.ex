@@ -6,6 +6,7 @@ defmodule BullXAccounts.AuthN do
   alias BullX.Config.Accounts, as: AccountsConfig
   alias BullX.Repo
   alias BullXAccounts.ActivationCode
+  alias BullXAccounts.AuthZ.Cache
   alias BullXAccounts.Code
   alias BullXAccounts.User
   alias BullXAccounts.UserChannelAuthCode
@@ -42,6 +43,37 @@ defmodule BullXAccounts.AuthN do
   end
 
   def fetch_session_user(_user_id), do: {:error, :not_found}
+
+  @spec update_user_status(User.t() | Ecto.UUID.t(), :active | :banned) ::
+          {:ok, User.t()} | {:error, :not_found} | {:error, Ecto.Changeset.t()}
+  def update_user_status(%User{} = user, status) when status in [:active, :banned] do
+    user
+    |> Ecto.Changeset.change(%{status: status})
+    |> Repo.update()
+    |> case do
+      {:ok, updated} ->
+        Cache.invalidate_all()
+        {:ok, updated}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  def update_user_status(id, status) when is_binary(id) and status in [:active, :banned] do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} ->
+        case Repo.get(User, uuid) do
+          nil -> {:error, :not_found}
+          user -> update_user_status(user, status)
+        end
+
+      :error ->
+        {:error, :not_found}
+    end
+  end
+
+  def update_user_status(_user, _status), do: {:error, :not_found}
 
   @spec match_or_create_from_channel(map()) ::
           {:ok, User.t(), UserChannelBinding.t()}
@@ -129,7 +161,6 @@ defmodule BullXAccounts.AuthN do
           {:ok, User.t(), UserChannelBinding.t()}
           | {:error, :invalid_or_expired_code}
           | {:error, :already_bound}
-          | {:error, :auto_match_available}
           | {:error, term()}
   def consume_activation_code(plaintext_code, input)
       when is_binary(plaintext_code) and is_map(input) do
@@ -211,37 +242,47 @@ defmodule BullXAccounts.AuthN do
   end
 
   defp consume_activation_code_in_transaction(plaintext_code, input) do
-    with :not_found <- fetch_binding_state(input),
-         :none <- automatic_match_state(input),
-         {:ok, activation_code} <- find_valid_activation_code(plaintext_code),
-         :ok <- mark_activation_code_used(activation_code, input) do
-      create_user_and_binding(input)
-    else
+    case fetch_binding_state(input) do
+      :not_found -> consume_activation_code_for_unbound_actor(plaintext_code, input)
       {:ok, _user, _binding} -> {:error, :already_bound}
       {:error, reason} -> {:error, reason}
-      :available -> {:error, :auto_match_available}
     end
   end
 
-  defp automatic_match_state(input) do
+  defp consume_activation_code_for_unbound_actor(plaintext_code, input) do
+    case automatic_match_result(input) do
+      {:ok, _user, _binding} = result ->
+        result
+
+      :none ->
+        with {:ok, activation_code} <- find_valid_activation_code(plaintext_code),
+             :ok <- mark_activation_code_used(activation_code, input) do
+          create_user_and_binding(input)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp automatic_match_result(input) do
     case evaluate_match_rules(input) do
-      {:bind, _user} ->
-        :available
+      {:bind, user} ->
+        bind_user_to_channel(user, input)
 
       :allow_create ->
-        if AccountsConfig.accounts_authn_auto_create_users!(), do: :available, else: :none
+        activation_required_to_none(auto_create_if_enabled(input))
 
       :no_match ->
-        case {AccountsConfig.accounts_authn_auto_create_users!(),
-              AccountsConfig.accounts_authn_require_activation_code!()} do
-          {true, false} -> :available
-          _ -> :none
-        end
+        activation_required_to_none(auto_create_unmatched(input))
 
       {:error, :user_banned} ->
         {:error, :user_banned}
     end
   end
+
+  defp activation_required_to_none({:error, :activation_required}), do: :none
+  defp activation_required_to_none(result), do: result
 
   defp evaluate_match_rules(input) do
     AccountsConfig.accounts_authn_match_rules!()
@@ -317,9 +358,9 @@ defmodule BullXAccounts.AuthN do
   defp bind_user_to_channel(%User{status: :banned}, _input), do: {:error, :user_banned}
 
   defp create_user_and_binding(input) do
-    with {:ok, user} <- insert_user(input),
-         {:ok, _user, binding} <- insert_binding(user, input) do
-      {:ok, user, binding}
+    case insert_user(input) do
+      {:ok, user} -> insert_first_binding(user, input)
+      {:error, changeset} -> existing_binding_or_error(changeset, input)
     end
   end
 
@@ -343,8 +384,44 @@ defmodule BullXAccounts.AuthN do
     |> Repo.insert()
     |> case do
       {:ok, binding} -> {:ok, user, binding}
-      {:error, changeset} -> {:error, changeset}
+      {:error, changeset} -> existing_binding_after_conflict(changeset, input)
     end
+  end
+
+  defp insert_first_binding(%User{} = created_user, input) do
+    case insert_binding(created_user, input) do
+      {:ok, %User{id: id}, _binding} = result when id == created_user.id ->
+        result
+
+      {:ok, _existing_user, _binding} = result ->
+        Repo.delete!(created_user)
+        result
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp existing_binding_after_conflict(changeset, input) do
+    case binding_unique_conflict?(changeset) do
+      true -> existing_binding_or_error(changeset, input)
+      false -> {:error, changeset}
+    end
+  end
+
+  defp existing_binding_or_error(changeset, input) do
+    case fetch_binding_state(input) do
+      {:ok, user, binding} -> {:ok, user, binding}
+      _other -> {:error, changeset}
+    end
+  end
+
+  defp binding_unique_conflict?(%Ecto.Changeset{} = changeset) do
+    Enum.any?(changeset.errors, fn
+      {_field, {_message, opts}} ->
+        Keyword.get(opts, :constraint) == :unique and
+          to_string(Keyword.get(opts, :constraint_name)) == "user_channel_bindings_actor_index"
+    end)
   end
 
   defp user_attrs(input) do
@@ -510,6 +587,9 @@ defmodule BullXAccounts.AuthN do
       value -> {:ok, value}
     end
   end
+
+  defp normalize_identifier(value) when value in [nil, true, false],
+    do: {:error, :invalid_identifier}
 
   defp normalize_identifier(value) when is_atom(value), do: {:ok, Atom.to_string(value)}
   defp normalize_identifier(value) when is_integer(value), do: {:ok, Integer.to_string(value)}

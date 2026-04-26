@@ -79,6 +79,8 @@ defmodule BullXAIAgent.Reasoning.TreeOfThoughts.Strategy do
   alias BullXAIAgent.Turn
   alias ReqLLM.Context
 
+  require Logger
+
   @type config :: %{
           model: String.t(),
           branching_factor: pos_integer(),
@@ -515,7 +517,9 @@ defmodule BullXAIAgent.Reasoning.TreeOfThoughts.Strategy do
     |> Turn.from_result_map()
     |> Turn.needs_tools?()
   rescue
-    _ -> false
+    exception ->
+      log_tooling_degradation(:llm_turn_needs_tools?, exception)
+      false
   end
 
   defp start_tool_round(agent, state, llm_call_id, result, config) do
@@ -605,7 +609,8 @@ defmodule BullXAIAgent.Reasoning.TreeOfThoughts.Strategy do
         {StratState.put(agent, new_state), directives}
     end
   rescue
-    _ ->
+    exception ->
+      log_tooling_degradation(:start_tool_round, exception)
       apply_machine_update(agent, {:llm_result, llm_call_id, result}, config)
   end
 
@@ -717,7 +722,15 @@ defmodule BullXAIAgent.Reasoning.TreeOfThoughts.Strategy do
         if fallback_from_turn != [], do: fallback_from_turn, else: default_order
     end
   rescue
-    _ -> pending_tool_calls_map(state) |> Map.keys() |> Enum.sort()
+    exception ->
+      log_tooling_degradation(:pending_tool_call_order, exception)
+      pending_tool_calls_map(state) |> Map.keys() |> Enum.sort()
+  end
+
+  defp log_tooling_degradation(operation, exception) do
+    Logger.warning(
+      "BullXAIAgent.TreeOfThoughts: tool handling degraded in #{operation}: #{Exception.message(exception)}"
+    )
   end
 
   defp pending_tool_calls_map(state) do

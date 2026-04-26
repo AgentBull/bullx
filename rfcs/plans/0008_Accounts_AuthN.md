@@ -20,7 +20,7 @@ Key decisions:
 - Gateway signals continue to carry channel-local actors only. Gateway does not add BullX user ids to inbound signals.
 - Runtime and other business code resolve a channel actor to a BullX user through BullXAccounts when identity is needed.
 - Web login uses standard Phoenix cookie sessions. JWTs are not an AuthN session mechanism in this RFC.
-- AuthZ is deliberately separate. This RFC does not create groups, group memberships, grants, Cedar policy evaluation, or permission caches. First-user administrator treatment is owned by the AuthZ RFC.
+- AuthZ is deliberately separate. This RFC does not create groups, group memberships, grants, Cedar policy evaluation, permission caches, or administrator membership assignment. Administrator onboarding belongs to setup or operator workflow.
 
 ### 1.1 Cleanup plan
 
@@ -103,7 +103,7 @@ Phoenix-specific login controllers and plugs live under `lib/bullx_web/`. Gatewa
 
 `email`, `phone`, and `username` are global unique fields. They are nullable because not every channel provides every profile field. If present, `phone` is stored in E.164 format.
 
-The first successfully created user is only an AuthN user in this RFC. AuthN does not create an `admin` group, does not create group memberships, and does not write authorization grants. AuthZ owns first-user administrator semantics in its own RFC.
+The first successfully created user is only an AuthN user in this RFC. AuthN does not create an `admin` group, does not create group memberships, does not write authorization grants, and does not decide administrator membership. Administrator onboarding belongs to setup or operator workflow.
 
 ### 4.2 Gateway channel identity
 
@@ -464,7 +464,6 @@ Expected public functions:
         {:ok, BullXAccounts.User.t(), BullXAccounts.UserChannelBinding.t()}
         | {:error, :invalid_or_expired_code}
         | {:error, :already_bound}
-        | {:error, :auto_match_available}
         | {:error, term()}
 
 @spec issue_user_channel_auth_code(atom() | String.t(), String.t(), String.t()) ::

@@ -456,6 +456,8 @@ defmodule BullXAIAgent.Agent do
 
       alias BullXAIAgent.{Request, Signal}
 
+      require Logger
+
       @doc """
       Send a query to the agent asynchronously.
 
@@ -754,7 +756,12 @@ defmodule BullXAIAgent.Agent do
           Jido.AgentServer.cast(self(), signal)
         end
       rescue
-        _ -> :ok
+        exception ->
+          Logger.warning(
+            "BullXAIAgent.Agent: failed to emit request completed lifecycle signal request_id=#{inspect(request_id)} reason=#{Exception.message(exception)}"
+          )
+
+          :ok
       end
 
       defp emit_request_failed_signal(agent, request_id, error) do
@@ -769,7 +776,12 @@ defmodule BullXAIAgent.Agent do
           Jido.AgentServer.cast(self(), signal)
         end
       rescue
-        _ -> :ok
+        exception ->
+          Logger.warning(
+            "BullXAIAgent.Agent: failed to emit request failed lifecycle signal request_id=#{inspect(request_id)} reason=#{Exception.message(exception)}"
+          )
+
+          :ok
       end
 
       defp lifecycle_signals_enabled?(agent) do

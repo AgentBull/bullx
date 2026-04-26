@@ -190,4 +190,28 @@ defmodule BullX.Ext do
   """
   @spec z85_decode(String.t()) :: result(binary())
   def z85_decode(_input), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Validate a Cedar boolean condition string.
+
+  The NIF wraps the supplied condition as a synthetic
+  `permit(principal, action, resource) when { <condition> };` policy and
+  parses it through Cedar. Returns `true` on success or
+  `{:error, reason}` if Cedar rejects the condition or the wrapped policy
+  contains anything other than a single `permit` policy with a single
+  `when` clause.
+  """
+  @spec cedar_condition_validate(String.t()) :: true | {:error, error_reason()}
+  def cedar_condition_validate(_condition), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Evaluate a Cedar boolean condition string against a normalized request.
+
+  The request is a map with `principal`, `action`, `resource`, and
+  `context` keys. The principal includes its `attrs`. Returns a boolean on
+  success or `{:error, reason}` on Cedar parse, request, or evaluation
+  failure.
+  """
+  @spec cedar_condition_eval(String.t(), map()) :: boolean() | {:error, error_reason()}
+  def cedar_condition_eval(_condition, _request), do: :erlang.nif_error(:nif_not_loaded)
 end

@@ -183,4 +183,12 @@ defmodule BullX.Config.Accounts do
     default: 300,
     zoi: Zoi.integer(gte: 1)
   )
+
+  @envdoc false
+  bullx_env(:accounts_authz_cache_ttl_ms,
+    key: [:accounts, :authz_cache_ttl_ms],
+    type: :integer,
+    default: 60_000,
+    zoi: Zoi.integer(gte: 0)
+  )
 end
