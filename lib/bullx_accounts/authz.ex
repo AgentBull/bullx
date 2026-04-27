@@ -8,7 +8,6 @@ defmodule BullXAccounts.AuthZ do
   alias BullXAccounts.AuthZ.Cedar
   alias BullXAccounts.AuthZ.ComputedGroup
   alias BullXAccounts.AuthZ.Request
-  alias BullXAccounts.AuthZ.ResourcePattern
   alias BullXAccounts.PermissionGrant
   alias BullXAccounts.User
   alias BullXAccounts.UserGroup
@@ -91,58 +90,49 @@ defmodule BullXAccounts.AuthZ do
     {static_group_ids, computed_group_ids} = effective_group_ids(user)
     group_ids = static_group_ids ++ computed_group_ids
 
-    grants = list_applicable_grants(user.id, group_ids, request)
+    grants = list_candidate_grants(user.id, group_ids, request)
 
-    if any_grant_allows?(grants, request), do: :allow, else: :deny
+    if any_loaded_grant_allows?(grants, request), do: :allow, else: :deny
   end
 
-  defp any_grant_allows?(grants, request) do
-    Enum.any?(grants, fn grant ->
-      case Cedar.evaluate(grant.condition, request) do
-        {:ok, true} ->
-          true
+  defp any_loaded_grant_allows?(grants, request) do
+    loaded_grants = Enum.map(grants, &loaded_grant/1)
 
-        {:ok, false} ->
-          false
+    case Cedar.eval_loaded_grants(request, loaded_grants) do
+      {:ok, allowed?, invalid_grants} ->
+        emit_invalid_persisted_conditions(invalid_grants)
+        allowed?
 
-        {:error, reason} ->
-          emit_invalid_persisted_data(grant, reason)
-          false
-      end
-    end)
+      {:error, _reason} ->
+        false
+    end
   end
 
-  defp emit_invalid_persisted_data(grant, reason) do
-    if invalid_persisted_condition?(grant.condition) do
+  defp loaded_grant(%PermissionGrant{} = grant) do
+    {grant.id, grant.resource_pattern, grant.condition}
+  end
+
+  defp emit_invalid_persisted_conditions(invalid_grants) do
+    Enum.each(invalid_grants, fn {grant_id, reason} ->
       Logger.error(
-        "BullXAccounts.AuthZ: invalid persisted condition grant_id=#{inspect(grant.id)} reason=#{inspect(reason)}"
+        "BullXAccounts.AuthZ: invalid persisted condition grant_id=#{inspect(grant_id)} reason=#{inspect(reason)}"
       )
 
       :telemetry.execute(
         [:bullx, :authz, :invalid_persisted_data],
         %{count: 1},
-        %{kind: :condition, id: grant.id, reason: reason}
+        %{kind: :condition, id: grant_id, reason: reason}
       )
-    end
+    end)
   end
 
-  defp invalid_persisted_condition?(condition) do
-    case Cedar.validate_condition(condition) do
-      :ok -> false
-      {:error, reason} -> not Cedar.nif_unavailable_reason?(reason)
-    end
-  end
-
-  defp list_applicable_grants(user_id, group_ids, %Request{action: action, resource: resource}) do
-    grants_query =
+  defp list_candidate_grants(user_id, group_ids, %Request{action: action}) do
+    Repo.all(
       from grant in PermissionGrant,
         where:
           grant.action == ^action and
             (grant.user_id == ^user_id or grant.group_id in ^group_ids)
-
-    grants_query
-    |> Repo.all()
-    |> Enum.filter(fn grant -> ResourcePattern.match?(grant.resource_pattern, resource) end)
+    )
   end
 
   ## Group expansion

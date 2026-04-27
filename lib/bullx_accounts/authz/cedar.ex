@@ -19,9 +19,8 @@ defmodule BullXAccounts.AuthZ.Cedar do
   @resource_type "BullXResource"
   @nif_unavailable_reason "cedar nif unavailable"
 
-  @doc false
-  @spec nif_unavailable_reason?(term()) :: boolean()
-  def nif_unavailable_reason?(reason), do: to_string(reason) == @nif_unavailable_reason
+  @type loaded_grant :: {String.t(), String.t(), String.t()}
+  @type invalid_grant :: {String.t(), String.t()}
 
   @doc """
   Validate a condition string. Cedar parses the synthetic policy and
@@ -52,7 +51,55 @@ defmodule BullXAccounts.AuthZ.Cedar do
   """
   @spec evaluate(String.t(), Request.t()) :: {:ok, boolean()} | {:error, String.t()}
   def evaluate(condition, %Request{} = request) when is_binary(condition) do
-    cedar_request = %{
+    try do
+      case BullX.Ext.cedar_condition_eval(condition, cedar_request(request)) do
+        result when is_boolean(result) -> {:ok, result}
+        {:error, reason} -> {:error, to_string(reason)}
+        _other -> {:error, "unexpected cedar response"}
+      end
+    rescue
+      ErlangError -> {:error, @nif_unavailable_reason}
+      UndefinedFunctionError -> {:error, @nif_unavailable_reason}
+    catch
+      :error, :nif_not_loaded -> {:error, @nif_unavailable_reason}
+      kind, reason -> {:error, "cedar #{kind}: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Evaluate already-loaded AuthZ grants against a normalized request.
+
+  The caller keeps persistence concerns in Elixir/Ecto and passes only the
+  native boundary data: `{grant_id, resource_pattern, condition}`.
+  """
+  @spec eval_loaded_grants(Request.t(), [loaded_grant()]) ::
+          {:ok, boolean(), [invalid_grant()]} | {:error, String.t()}
+  def eval_loaded_grants(%Request{} = request, loaded_grants) when is_list(loaded_grants) do
+    try do
+      case BullX.Ext.authz_eval_loaded_grants(cedar_request(request), loaded_grants) do
+        {:allow, invalid_grants} when is_list(invalid_grants) ->
+          {:ok, true, invalid_grants}
+
+        {:deny, invalid_grants} when is_list(invalid_grants) ->
+          {:ok, false, invalid_grants}
+
+        {:error, reason} ->
+          {:error, to_string(reason)}
+
+        _other ->
+          {:error, "unexpected cedar response"}
+      end
+    rescue
+      ErlangError -> {:error, @nif_unavailable_reason}
+      UndefinedFunctionError -> {:error, @nif_unavailable_reason}
+    catch
+      :error, :nif_not_loaded -> {:error, @nif_unavailable_reason}
+      kind, reason -> {:error, "cedar #{kind}: #{inspect(reason)}"}
+    end
+  end
+
+  defp cedar_request(%Request{} = request) do
+    %{
       "principal" => %{
         "type" => @principal_type,
         "id" => request.user_id,
@@ -70,19 +117,5 @@ defmodule BullXAccounts.AuthZ.Cedar do
       },
       "context" => %{"request" => request.context}
     }
-
-    try do
-      case BullX.Ext.cedar_condition_eval(condition, cedar_request) do
-        result when is_boolean(result) -> {:ok, result}
-        {:error, reason} -> {:error, to_string(reason)}
-        _other -> {:error, "unexpected cedar response"}
-      end
-    rescue
-      ErlangError -> {:error, @nif_unavailable_reason}
-      UndefinedFunctionError -> {:error, @nif_unavailable_reason}
-    catch
-      :error, :nif_not_loaded -> {:error, @nif_unavailable_reason}
-      kind, reason -> {:error, "cedar #{kind}: #{inspect(reason)}"}
-    end
   end
 end

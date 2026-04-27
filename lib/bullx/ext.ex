@@ -214,4 +214,114 @@ defmodule BullX.Ext do
   """
   @spec cedar_condition_eval(String.t(), map()) :: boolean() | {:error, error_reason()}
   def cedar_condition_eval(_condition, _request), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Evaluate already-loaded AuthZ grants against a normalized Cedar request.
+
+  Ecto remains responsible for loading candidate grants. The native boundary
+  receives only `{grant_id, resource_pattern, condition}` tuples, then performs
+  resource-pattern matching and Cedar condition evaluation in list order,
+  short-circuiting on the first allow. Invalid matching conditions fail closed
+  for that grant and are returned for caller telemetry.
+  """
+  @spec authz_eval_loaded_grants(
+          map(),
+          [{String.t(), String.t(), String.t()}]
+        ) :: {:allow | :deny, [{String.t(), error_reason()}]} | {:error, error_reason()}
+  def authz_eval_loaded_grants(_request, _loaded_grants), do: :erlang.nif_error(:nif_not_loaded)
+
+  @typedoc """
+  JWS algorithm atom. Mirrors `jsonwebtoken::Algorithm` — HMAC, RSA-PKCS1-v1.5,
+  RSA-PSS, ECDSA, and Edwards-curve EdDSA — using the `:ed_dsa` snake_case form
+  to keep with Elixir convention.
+  """
+  @type jwt_algorithm ::
+          :hs256
+          | :hs384
+          | :hs512
+          | :rs256
+          | :rs384
+          | :rs512
+          | :ps256
+          | :ps384
+          | :ps512
+          | :es256
+          | :es384
+          | :ed_dsa
+
+  @typedoc """
+  Optional header overrides. The `:type` field is always set to `"JWT"` by the
+  NIF so callers don't need to provide it.
+  """
+  @type jwt_header :: %{
+          optional(:algorithm) => jwt_algorithm(),
+          optional(:content_type) => String.t(),
+          optional(:json_key_url) => String.t(),
+          optional(:key_id) => String.t(),
+          optional(:x5_url) => String.t(),
+          optional(:x5_cert_chain) => [String.t()],
+          optional(:x5_cert_thumbprint) => String.t(),
+          optional(:x5t_s256_cert_thumbprint) => String.t()
+        }
+
+  @typedoc """
+  Validation knobs handed to `jsonwebtoken::Validation`. Defaults match the
+  upstream library: HS256 only, validate `exp`, 60-second leeway, all other
+  claim checks off.
+
+  Setting `:validate_signature` to `false` switches to
+  `jsonwebtoken::dangerous::insecure_decode` — the only path that returns
+  claims without proving authenticity. Treat with care.
+  """
+  @type jwt_validation :: %{
+          optional(:aud) => [String.t()],
+          optional(:required_spec_claims) => [String.t()],
+          optional(:leeway) => non_neg_integer(),
+          optional(:validate_exp) => boolean(),
+          optional(:validate_nbf) => boolean(),
+          optional(:sub) => String.t(),
+          optional(:algorithms) => [jwt_algorithm()],
+          optional(:iss) => [String.t()],
+          optional(:validate_signature) => boolean()
+        }
+
+  @doc """
+  Sign a JWT.
+
+  `claims` is any map keyed by atoms or strings; nested maps and lists round
+  trip cleanly. `key` is the raw HMAC secret for HS\\* algorithms or a
+  PEM-encoded private key for RS/PS/ES/EdDSA. `header` defaults to HS256 with
+  `typ=JWT`.
+
+  An `iat` claim is inserted automatically if missing — matching the JS
+  reference port — so signed tokens always carry a creation time.
+
+  ## Example
+
+      iex> token = BullX.Ext.jwt_sign(%{email: "foo@bar"}, "secret")
+      iex> {:ok, _claims} = BullX.Ext.jwt_verify(token, "secret")
+  """
+  @spec jwt_sign(map(), binary(), jwt_header() | nil) :: result(String.t())
+  def jwt_sign(claims, key, header \\ nil)
+  def jwt_sign(_claims, _key, _header), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Verify a JWT and return its claims.
+
+  Returns the claims map on success or `{:error, reason}` on signature
+  failure, expiration, malformed token, or any validation rejection.
+
+  Pass `validation` to override defaults — see `t:jwt_validation/0`.
+  """
+  @spec jwt_verify(String.t(), binary(), jwt_validation() | nil) :: result(map())
+  def jwt_verify(token, key, validation \\ nil)
+  def jwt_verify(_token, _key, _validation), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Decode the JWT header without verifying the signature — useful for
+  selecting a key by `key_id`/`algorithm` before paying the verification
+  cost.
+  """
+  @spec jwt_decode_header(String.t()) :: result(map())
+  def jwt_decode_header(_token), do: :erlang.nif_error(:nif_not_loaded)
 end

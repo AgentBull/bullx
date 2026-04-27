@@ -4,11 +4,19 @@ use cedar_policy::{
   Authorizer, Context, Decision, Effect, Entities, EntityId, EntityTypeName, EntityUid, PolicySet,
   Request,
 };
+use rustler::types::list::ListIterator;
 use rustler::types::map::MapIterator;
 use rustler::{Encoder, Env, NifResult, Term, TermType};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
 use crate::encoding::error;
+
+mod atoms {
+  rustler::atoms! {
+    allow,
+    deny,
+  }
+}
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn cedar_condition_validate(condition: Term<'_>) -> NifResult<bool> {
@@ -16,7 +24,7 @@ pub fn cedar_condition_validate(condition: Term<'_>) -> NifResult<bool> {
     .decode()
     .map_err(|_| error("condition must be a string"))?;
 
-  parse_synthetic_policy_set(&condition)?;
+  parse_synthetic_policy_set(&condition).map_err(error)?;
   Ok(true)
 }
 
@@ -30,7 +38,7 @@ pub fn cedar_condition_eval<'a>(
     .decode()
     .map_err(|_| error("condition must be a string"))?;
 
-  let policy_set = parse_synthetic_policy_set(&condition)?;
+  let policy_set = parse_synthetic_policy_set(&condition).map_err(error)?;
   let data = decode_request(request)?;
 
   let entities = build_entities(&data)?;
@@ -40,6 +48,24 @@ pub fn cedar_condition_eval<'a>(
   let response = authorizer.is_authorized(&cedar_request, &policy_set, &entities);
 
   Ok((response.decision() == Decision::Allow).encode(env))
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn authz_eval_loaded_grants<'a>(
+  env: Env<'a>,
+  request: Term<'a>,
+  loaded_grants: Term<'a>,
+) -> NifResult<Term<'a>> {
+  let data = decode_request(request)?;
+  let loaded_grants = decode_loaded_grants(loaded_grants)?;
+  let decision = eval_loaded_grants(&data, &loaded_grants)?;
+
+  let result = match decision {
+    LoadedGrantDecision::Allow(invalid_grants) => (atoms::allow(), invalid_grants),
+    LoadedGrantDecision::Deny(invalid_grants) => (atoms::deny(), invalid_grants),
+  };
+
+  Ok(result.encode(env))
 }
 
 struct RequestData {
@@ -53,61 +79,147 @@ struct RequestData {
   context: JsonValue,
 }
 
-fn parse_synthetic_policy_set(condition: &str) -> NifResult<PolicySet> {
+struct LoadedGrant {
+  id: String,
+  resource_pattern: String,
+  condition: String,
+}
+
+type InvalidGrant = (String, String);
+
+enum LoadedGrantDecision {
+  Allow(Vec<InvalidGrant>),
+  Deny(Vec<InvalidGrant>),
+}
+
+fn parse_synthetic_policy_set(condition: &str) -> Result<PolicySet, String> {
   let policy_text = format!(
     "permit(principal, action, resource) when {{\n{}\n}};",
     condition
   );
 
-  let policy_set = PolicySet::from_str(&policy_text)
-    .map_err(|e| error(format!("invalid cedar condition: {e}")))?;
+  let policy_set =
+    PolicySet::from_str(&policy_text).map_err(|e| format!("invalid cedar condition: {e}"))?;
 
   if policy_set.templates().count() > 0 {
-    return Err(error("cedar templates are not allowed"));
+    return Err("cedar templates are not allowed".to_owned());
   }
 
   let policies: Vec<_> = policy_set.policies().collect();
   if policies.len() != 1 {
-    return Err(error(format!(
+    return Err(format!(
       "expected exactly one cedar policy, got {}",
       policies.len()
-    )));
+    ));
   }
 
   let policy = policies[0];
 
   if policy.effect() != Effect::Permit {
-    return Err(error("only the permit effect is allowed"));
+    return Err("only the permit effect is allowed".to_owned());
   }
 
   let policy_json = policy
     .to_json()
-    .map_err(|e| error(format!("policy to json failed: {e}")))?;
+    .map_err(|e| format!("policy to json failed: {e}"))?;
 
   let conditions = policy_json
     .get("conditions")
     .and_then(|c| c.as_array())
-    .ok_or_else(|| error("policy missing conditions array"))?;
+    .ok_or_else(|| "policy missing conditions array".to_owned())?;
 
   if conditions.len() != 1 {
-    return Err(error(format!(
+    return Err(format!(
       "expected exactly one when clause, got {}",
       conditions.len()
-    )));
+    ));
   }
 
   let kind = conditions[0]
     .get("kind")
     .and_then(|k| k.as_str())
-    .ok_or_else(|| error("condition missing kind"))?;
+    .ok_or_else(|| "condition missing kind".to_owned())?;
 
   if kind != "when" {
-    return Err(error(format!(
-      "only 'when' clauses are allowed, got '{kind}'"
-    )));
+    return Err(format!("only 'when' clauses are allowed, got '{kind}'"));
   }
 
   Ok(policy_set)
+}
+
+fn decode_loaded_grants(term: Term<'_>) -> NifResult<Vec<LoadedGrant>> {
+  let iter: ListIterator = term
+    .decode()
+    .map_err(|_| error("loaded_grants must be a list"))?;
+
+  let mut grants = Vec::new();
+
+  for grant in iter {
+    let (id, resource_pattern, condition): (String, String, String) = grant
+      .decode()
+      .map_err(|_| error("loaded_grants entries must be {id, resource_pattern, condition}"))?;
+
+    grants.push(LoadedGrant {
+      id,
+      resource_pattern,
+      condition,
+    });
+  }
+
+  Ok(grants)
+}
+
+fn eval_loaded_grants(
+  data: &RequestData,
+  loaded_grants: &[LoadedGrant],
+) -> NifResult<LoadedGrantDecision> {
+  let entities = build_entities(data)?;
+  let cedar_request = build_request(data)?;
+  let authorizer = Authorizer::new();
+  let mut invalid_grants = Vec::new();
+
+  for grant in loaded_grants {
+    if !resource_pattern_matches(&grant.resource_pattern, &data.resource_id) {
+      continue;
+    }
+
+    let policy_set = match parse_synthetic_policy_set(&grant.condition) {
+      Ok(policy_set) => policy_set,
+      Err(reason) => {
+        invalid_grants.push((grant.id.clone(), reason));
+        continue;
+      }
+    };
+
+    let response = authorizer.is_authorized(&cedar_request, &policy_set, &entities);
+
+    if response.decision() == Decision::Allow {
+      return Ok(LoadedGrantDecision::Allow(invalid_grants));
+    }
+  }
+
+  Ok(LoadedGrantDecision::Deny(invalid_grants))
+}
+
+fn resource_pattern_matches(pattern: &str, resource: &str) -> bool {
+  if pattern.is_empty() {
+    return false;
+  }
+
+  let mut wildcard_matches = pattern.match_indices('*');
+
+  match (wildcard_matches.next(), wildcard_matches.next()) {
+    (None, _) => pattern == resource,
+    (Some((wildcard_index, _)), None) => {
+      let prefix = &pattern[..wildcard_index];
+      let suffix = &pattern[wildcard_index + 1..];
+
+      resource.len() >= prefix.len() + suffix.len()
+        && resource.starts_with(prefix)
+        && resource.ends_with(suffix)
+    }
+    (Some(_), Some(_)) => false,
+  }
 }
 
 fn decode_request(request: Term<'_>) -> NifResult<RequestData> {
@@ -290,4 +402,82 @@ fn map_to_json(term: Term<'_>) -> NifResult<JsonValue> {
   }
 
   Ok(JsonValue::Object(object))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use serde_json::json;
+
+  #[test]
+  fn resource_pattern_matches_literal_and_single_wildcard() {
+    assert!(resource_pattern_matches("web_console", "web_console"));
+    assert!(resource_pattern_matches(
+      "gateway_channel:*",
+      "gateway_channel:foo:bar"
+    ));
+    assert!(resource_pattern_matches("*", "anything"));
+    assert!(!resource_pattern_matches("web_console", "other"));
+    assert!(!resource_pattern_matches("web*console", "web"));
+    assert!(!resource_pattern_matches("web**", "web_console"));
+    assert!(!resource_pattern_matches("", "web_console"));
+  }
+
+  #[test]
+  fn eval_loaded_grants_skips_mismatches_records_invalids_and_short_circuits() {
+    let data = request_data();
+
+    let grants = vec![
+      LoadedGrant {
+        id: "mismatch".to_owned(),
+        resource_pattern: "other".to_owned(),
+        condition: "this is invalid cedar".to_owned(),
+      },
+      LoadedGrant {
+        id: "invalid".to_owned(),
+        resource_pattern: "web_*".to_owned(),
+        condition: "this is invalid cedar".to_owned(),
+      },
+      LoadedGrant {
+        id: "allow".to_owned(),
+        resource_pattern: "web_*".to_owned(),
+        condition: "context.request.business_hours".to_owned(),
+      },
+      LoadedGrant {
+        id: "after_allow".to_owned(),
+        resource_pattern: "web_*".to_owned(),
+        condition: "this is invalid cedar".to_owned(),
+      },
+    ];
+
+    let decision = eval_loaded_grants(&data, &grants).expect("loaded grants should evaluate");
+
+    match decision {
+      LoadedGrantDecision::Allow(invalid_grants) => {
+        assert_eq!(invalid_grants.len(), 1);
+        assert_eq!(invalid_grants[0].0, "invalid");
+        assert!(invalid_grants[0].1.contains("invalid cedar condition"));
+      }
+      LoadedGrantDecision::Deny(_) => panic!("expected allow decision"),
+    }
+  }
+
+  fn request_data() -> RequestData {
+    RequestData {
+      principal_type: "BullXUser".to_owned(),
+      principal_id: "019dc9bc-0000-7000-8000-000000000001".to_owned(),
+      action_type: "BullXAction".to_owned(),
+      action_id: "read".to_owned(),
+      resource_type: "BullXResource".to_owned(),
+      resource_id: "web_console".to_owned(),
+      principal_attrs: json!({
+        "id": "019dc9bc-0000-7000-8000-000000000001"
+      }),
+      context: json!({
+        "request": {
+          "business_hours": true
+        }
+      }),
+    }
+  }
 }

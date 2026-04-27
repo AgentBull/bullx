@@ -8,6 +8,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 mod crypto {
   pub mod argon2;
   pub mod blake3;
+  pub mod jwt;
 }
 
 mod cedar;
