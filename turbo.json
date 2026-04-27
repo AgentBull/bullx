@@ -1,0 +1,96 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "lint:js": {
+      "inputs": [
+        "webui/src/**/*",
+        "rslint.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "bun.lock"
+      ],
+      "outputs": []
+    },
+    "test": {
+      "inputs": [
+        "webui/src/**/*",
+        "priv/locales/client/**/*",
+        "rstest.config.ts",
+        "rsbuild.config.ts",
+        "tsconfig.json",
+        "package.json",
+        "bun.lock"
+      ],
+      "outputs": []
+    },
+    "fmt:check": {
+      "inputs": [
+        ".formatter.exs",
+        "mix.exs",
+        "mix.lock",
+        "Cargo.toml",
+        "Cargo.lock",
+        "config/**/*.exs",
+        "lib/**/*.ex",
+        "lib/**/*.exs",
+        "native/**/*.rs",
+        "test/**/*.exs"
+      ],
+      "outputs": []
+    },
+    "deps:unused": {
+      "dependsOn": ["fmt:check"],
+      "inputs": ["mix.exs", "mix.lock"],
+      "outputs": []
+    },
+    "compile": {
+      "dependsOn": ["deps:unused"],
+      "inputs": [
+        "mix.exs",
+        "mix.lock",
+        "Cargo.toml",
+        "Cargo.lock",
+        "config/**/*.exs",
+        "lib/**/*.ex",
+        "lib/**/*.exs",
+        "native/**/*.rs",
+        "packages/**/*.ex",
+        "packages/**/*.exs",
+        "priv/**/*",
+        "test/**/*.exs"
+      ],
+      "outputs": []
+    },
+    "i18n": {
+      "dependsOn": ["compile"],
+      "inputs": [
+        "mix.exs",
+        "mix.lock",
+        "config/**/*.exs",
+        "lib/**/*.ex",
+        "lib/**/*.exs",
+        "priv/locales/**/*",
+        "webui/src/**/*"
+      ],
+      "outputs": []
+    },
+    "test:elixir": {
+      "dependsOn": ["i18n"],
+      "inputs": [
+        "mix.exs",
+        "mix.lock",
+        "Cargo.toml",
+        "Cargo.lock",
+        "config/**/*.exs",
+        "lib/**/*.ex",
+        "lib/**/*.exs",
+        "native/**/*.rs",
+        "packages/**/*.ex",
+        "packages/**/*.exs",
+        "priv/**/*",
+        "test/**/*.exs"
+      ],
+      "outputs": []
+    }
+  }
+}

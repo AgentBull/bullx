@@ -25,12 +25,6 @@ defmodule BullX.MixProject do
     ]
   end
 
-  def cli do
-    [
-      preferred_envs: [precommit: :test]
-    ]
-  end
-
   # Specifies which paths to compile per environment.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
@@ -101,13 +95,6 @@ defmodule BullX.MixProject do
         "compile",
         "cmd bun run build",
         "phx.digest"
-      ],
-      precommit: [
-        "compile --warnings-as-errors",
-        "deps.unlock --unused",
-        "format",
-        "i18n.check",
-        "test"
       ]
     ]
   end

@@ -15,15 +15,13 @@ Thank you for your interest in contributing to BullX! We welcome bug reports, fe
 
 ```sh
 mix setup              # install deps, create and migrate the database, build assets
-iex -S mix phx.server  # start the dev server at http://localhost:4000
+bun dev                # start Phoenix and the Rsbuild dev server
 ```
 
 ### Git hooks (lefthook)
 
 A git pre-commit hook is wired up via [lefthook](https://lefthook.dev) — it
-formats staged `.ex`/`.exs`/`.heex` files, compiles with
-`--warnings-as-errors`, and prunes unused deps. It deliberately skips `mix
-test`; run the full `mix precommit` manually before opening a PR.
+runs the same `bun precommit` gate documented for local development.
 
 Install the binary once (`brew install lefthook`, or see the
 [installation docs](https://lefthook.dev/installation/) for other platforms),
@@ -36,8 +34,9 @@ lefthook install   # writes .git/hooks/* from lefthook.yml
 ### Tests
 
 ```sh
-mix test        # run the test suite
-mix precommit   # compile (warnings as errors) + format check + test — must pass before committing
+bun run test     # run frontend tests
+mix test         # run the Elixir test suite
+bun precommit    # full precommit gate — must pass before committing
 ```
 
 ## Architecture overview
@@ -80,7 +79,7 @@ For purely manual changes and minor bug fixes, a plan is encouraged but not requ
 ## Submitting a pull request
 
 1. Fork the repository and create a branch from `main`.
-2. Make your changes with tests where applicable. `mix precommit` must pass.
+2. Make your changes with tests where applicable. `bun precommit` must pass.
 3. If your change implements or extends an RFC, reference it in the PR description.
 4. Open a pull request with a concise title and a summary of what changed and why.
 

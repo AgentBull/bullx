@@ -34,6 +34,7 @@ bullx-*.tar
 # In case you use JavaScript package managers, you want to ignore these.
 npm-debug.log
 /node_modules/
+/.turbo/
 
 
 *.env.local

@@ -4,7 +4,7 @@
 @import "@fontsource-variable/geist";
 
 @source "../css";
-@source "../js";
+@source "../../webui/src";
 @source "../../lib/bullx_web";
 
 @plugin "../vendor/heroicons";

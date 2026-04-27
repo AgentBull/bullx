@@ -1,5 +1,3 @@
-import "vite/modulepreload-polyfill"
-
 // If you want to use Phoenix channels, run `mix help phx.gen.channel`
 // to get started and then uncomment the line below.
 // import "./user_socket.js"
@@ -14,7 +12,13 @@ import { createRoot } from "react-dom/client"
 import { BullXI18nextProvider } from "./i18n/provider"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
-const pages = import.meta.glob("./spas/**/*.jsx")
+const inertiaElement = document.getElementById("app")
+const inertiaPage = initialInertiaPage(inertiaElement)
+const pages = import.meta.webpackContext("./spas", {
+  recursive: true,
+  regExp: /\.jsx$/,
+  mode: "lazy",
+})
 const liveViewSelector = "[data-phx-main], [data-phx-session]"
 
 axios.defaults.xsrfHeaderName = "x-csrf-token"
@@ -23,25 +27,28 @@ if (csrfToken) {
   axios.defaults.headers.common["x-csrf-token"] = csrfToken
 }
 
-createInertiaApp({
-  title: title => title ? `${title} · BullX` : "BullX",
-  resolve: async name => {
-    const page = pages[`./spas/${name}.jsx`]
+if (inertiaPage) {
+  createInertiaApp({
+    page: inertiaPage,
+    title: title => title ? `${title} · BullX` : "BullX",
+    resolve: async name => {
+      const path = `./${name}.jsx`
 
-    if (!page) {
-      throw new Error(`Unknown Inertia page: ${name}`)
-    }
+      if (!pages.keys().includes(path)) {
+        throw new Error(`Unknown Inertia page: ${name}`)
+      }
 
-    return await page()
-  },
-  setup({ App, el, props }) {
-    createRoot(el).render(
-      <BullXI18nextProvider>
-        <App {...props} />
-      </BullXI18nextProvider>,
-    )
-  },
-})
+      return await pages(path)
+    },
+    setup({ App, el, props }) {
+      createRoot(el).render(
+        <BullXI18nextProvider>
+          <App {...props} />
+        </BullXI18nextProvider>,
+      )
+    },
+  })
+}
 
 if (document.querySelector(liveViewSelector)) {
   setupLiveView()
@@ -52,7 +59,7 @@ async function setupLiveView() {
     import("phoenix"),
     import("phoenix_live_view"),
     import("phoenix-colocated/bullx"),
-    import("../vendor/topbar"),
+    import("../../assets/vendor/topbar"),
   ])
 
   const liveSocket = new LiveSocket("/live", Socket, {
@@ -94,4 +101,11 @@ function setupLiveReloader() {
 
     window.liveReloader = reloader
   })
+}
+
+function initialInertiaPage(element) {
+  const json = document.querySelector('script[data-page="app"][type="application/json"]')?.textContent
+    || element?.dataset.page
+
+  return json ? JSON.parse(json) : null
 }

@@ -46,16 +46,16 @@ BullX 是一个高可用、自演化、自愈的 AI Agent 操作系统，基于 
 # 初始化 Elixir 依赖、JS 依赖、数据库和资产
 mix setup
 
-# 启动 Phoenix；Vite 会作为开发资源服务一起启动
-iex -S mix phx.server
+# 启动 Phoenix 和 Rsbuild 开发资源服务
+bun dev
 ```
 
 访问 `http://localhost:4000`。
 
 当本地 `users` 表为空时，`/` 会跳转到 `/setup`。一旦至少存在一个用户，未登录用户会进入 `/sessions/new`，已登录用户访问 `/` 时会挂载控制台 SPA。
 
-开发模式下，Phoenix 会把 Vite 作为 endpoint watcher 启动。浏览器入口仍然是 `http://localhost:4000`；Vite 在 `http://localhost:5173` 为 React/Inertia 提供热更新。
-如果这些端口已被占用，可以在 `.env.local` 中设置 `PORT` 和 `VITE_PORT`，例如 `PORT=4001`、`VITE_PORT=5174`。
+开发模式下，Phoenix 会把 Rsbuild 作为 endpoint watcher 启动。浏览器入口仍然是 `http://localhost:4000`；Rsbuild 在 `http://localhost:5173` 为 React/Inertia 提供热更新。
+如果这些端口已被占用，可以在 `.env.local` 中设置 `PORT` 和 `RSBUILD_PORT`，例如 `PORT=4001`、`RSBUILD_PORT=5174`。
 
 常用项目命令：
 
@@ -66,23 +66,29 @@ bun install
 
 ```sh
 # 运行提交前的完整项目检查
-mix precommit
+bun precommit
 ```
 
-## Vite 资产构建
+```sh
+# 运行前端测试和跨语言 lint 检查
+bun run test
+bun run lint
+```
 
-React/Inertia 入口位于 `assets/js/app.jsx`，各 SPA 页面位于 `assets/js/spas/`。构建可部署资产时，Vite 会写入 `priv/static/assets/.vite/manifest.json`；非开发环境下，Phoenix 会从该 manifest 解析脚本与样式。
-从仓库根目录运行 Bun；Vite 仍然以 `assets/` 作为源码根目录。
+## Rsbuild 资产构建
+
+React/Inertia 入口位于 `webui/src/app.jsx`，各 SPA 页面位于 `webui/src/spas/`。构建可部署资产时，Rsbuild 会写入 `priv/static/assets/.rsbuild/manifest.json`；非开发环境下，Phoenix 会从该 manifest 解析脚本与样式。
+从仓库根目录运行 Bun；Rsbuild 使用 `webui/src/` 存放应用源码，使用 `assets/css/` 存放 Phoenix CSS 入口。
 
 ```sh
-# 构建 Vite 资产和 manifest
+# 构建 Rsbuild 资产和 manifest
 mix assets.build
 
 # 构建生产资产并生成 digest
 mix assets.deploy
 ```
 
-`mix assets.deploy` 会执行编译、Vite build 和 `phx.digest`。构建生产 release 前先运行它。
+`mix assets.deploy` 会执行编译、Rsbuild build 和 `phx.digest`。构建生产 release 前先运行它。
 
 **生产环境：**
 

@@ -6,17 +6,9 @@
 #
 # Per-developer overrides can be placed in `lefthook-local.yml` (gitignored).
 #
-# The hook runs a lighter subset of `mix precommit` — it deliberately skips
-# `mix test` because running the full suite on every commit is too slow to
-# keep in the flow. Run `mix precommit` manually before opening a PR.
+# The hook runs the same precommit gate documented for developers.
 
 pre-commit:
   commands:
-    format:
-      glob: "*.{heex,ex,exs}"
-      run: mix format {staged_files}
-      stage_fixed: true
-    compile:
-      run: mix compile --warnings-as-errors
-    deps-unlock:
-      run: mix deps.unlock --unused
+    precommit:
+      run: bun precommit

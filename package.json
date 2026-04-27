@@ -1,12 +1,23 @@
 {
+  "packageManager": "bun@1.3.13",
   "scripts": {
-    "dev": "vite --config assets/vite.config.mjs",
-    "build": "vite build --config assets/vite.config.mjs",
-    "test:js": "bun test assets/js"
+    "dev": "iex -S mix phx.server",
+    "rsbuild:dev": "bun --bun rsbuild dev",
+    "build": "bun --bun rsbuild build",
+    "fmt": "mix format && cargo fmt --all",
+    "fmt:check": "mix format --check-formatted && cargo fmt --all --check",
+    "lint:js": "bun --bun rslint webui/src",
+    "lint": "bun --bun turbo run lint:js fmt:check --output-logs=new-only",
+    "test": "bun --bun rstest run",
+    "test:elixir": "MIX_ENV=test mix test",
+    "compile": "MIX_ENV=test mix compile --warnings-as-errors",
+    "i18n": "MIX_ENV=test mix i18n.check",
+    "deps:unused": "mix deps.unlock --unused",
+    "precommit": "bun --bun turbo run lint:js test fmt:check deps:unused compile i18n test:elixir --output-logs=new-only"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
-    "@inertiajs/react": "^2.3.21",
+    "@inertiajs/react": "^3.0.3",
     "axios": "^1.15.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -17,15 +28,21 @@
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-i18next": "^17.0.4",
-    "shadcn": "^4.4.0",
+    "shadcn": "^4.5.0",
     "tailwind-merge": "^3.5.0",
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
-    "@iarna/toml": "^2.2.5",
-    "@tailwindcss/vite": "^4.2.4",
-    "@vitejs/plugin-react": "^5.1.2",
+    "@iarna/toml": "^3.0.0",
+    "@rsbuild/core": "^2.0.1",
+    "@rsbuild/plugin-react": "^2.0.0",
+    "@rslint/core": "^0.5.0",
+    "@rstest/adapter-rsbuild": "^0.2.6",
+    "@rstest/core": "^0.9.9",
+    "@tailwindcss/postcss": "^4.2.4",
+    "happy-dom": "^20.8.9",
     "tailwindcss": "^4.2.4",
-    "vite": "^8.0.10"
+    "turbo": "^2.9.6",
+    "typescript": "^6.0.3"
   }
 }

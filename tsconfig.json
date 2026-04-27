@@ -1,14 +1,13 @@
 // This file enables editor support for the React/Inertia asset tree.
-// Vite resolves Phoenix JavaScript packages through aliases in assets/vite.config.mjs.
+// Rsbuild resolves Phoenix JavaScript packages through aliases in rsbuild.config.ts.
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["./assets/js/*"],
+      "@/*": ["./webui/src/*"],
       "@locales/*": ["./priv/locales/client/*"]
     },
     "allowJs": true,
     "noEmit": true
   },
-  "include": ["assets/js/**/*"]
+  "include": ["webui/src/**/*"]
 }

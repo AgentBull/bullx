@@ -35,7 +35,7 @@ config :bullx, BullX.Mailer, adapter: Swoosh.Adapters.Local
 
 config :inertia,
   endpoint: BullXWeb.Endpoint,
-  static_paths: ["/assets/.vite/manifest.json"],
+  static_paths: ["/assets/.rsbuild/manifest.json"],
   default_version: "1",
   history: [encrypt: false],
   ssr: false

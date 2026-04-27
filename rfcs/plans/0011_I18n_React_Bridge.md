@@ -7,12 +7,12 @@
 
 ## 1. TL;DR
 
-RFC 0007 made `priv/locales/*.toml` plus MessageFormat 2 the source of truth for **server-side** BullX translations. This RFC adds **front-end** translations under `priv/locales/client/*.toml`, bundled by Vite into the React app and consumed through an in-browser i18next runtime.
+RFC 0007 made `priv/locales/*.toml` plus MessageFormat 2 the source of truth for **server-side** BullX translations. This RFC adds **front-end** translations under `priv/locales/client/*.toml`, bundled by Rsbuild into the React app and consumed through an in-browser i18next runtime.
 
 Front-end and back-end share the TOML format and the BCP 47 locale-tag convention. They share nothing else:
 
 - `priv/locales/<bcp47>.toml` — server-only translations. Loaded by `BullX.I18n.Catalog`. Unchanged by this RFC.
-- `priv/locales/client/<bcp47>.toml` — client-only translations. Loaded at Vite build time as static modules, registered as i18next resources.
+- `priv/locales/client/<bcp47>.toml` — client-only translations. Loaded at Rsbuild build time as static modules, registered as i18next resources.
 
 The only coupling between the two sides is the active locale, propagated via `<html lang>` (server-set, client-read at boot). There is no Inertia bridge for translations, no catalog export endpoint, no allowlist, no payload revision, no fallback-chain mirroring. Each side reads its own files and runs its own engine.
 
@@ -43,8 +43,8 @@ t("web.sessions.new.placeholder", { values: { form_action: formAction } })
   - `react-i18next` for React context and rendering.
 - **Code paths changing**
   - New `priv/locales/client/*.toml` directory with `web.*` keys.
-  - New Vite TOML loader plugin so React can `import` the locale files.
-  - New `assets/js/i18n/` initializer (mf2 post-processor + i18next init + provider).
+  - New Rsbuild TOML loader plugin so React can `import` the locale files.
+  - New `webui/src/i18n/` initializer (mf2 post-processor + i18next init + provider).
   - `root.html.heex` reads `<html lang>` from the active locale.
   - Existing React SPA copy moves from hard-coded strings to `t(...)` / `<Trans>` calls.
   - `mix i18n.check` additionally validates `priv/locales/client/*.toml`.
@@ -63,18 +63,18 @@ t("web.sessions.new.placeholder", { values: { form_action: formAction } })
 
 ### 2.1 In Scope
 
-- React pages rendered by the existing Vite + Inertia stack.
+- React pages rendered by the existing Rsbuild + Inertia stack.
 - Browser-side rendering of MF2 messages from `priv/locales/client/*.toml`.
 - `react-i18next` component usage through `useTranslation` and `Trans`.
 - Basic safe MF2 markup aliases (`bold` / `b` / `strong`, `i` / `italic` / `em`, `u`, `s`, `code`, `small`, `br`).
-- Vite TOML loader so client locale files import as JS objects.
+- Rsbuild TOML loader so client locale files import as JS objects.
 - Active-locale propagation through `<html lang>`.
 - `<html dir>` set from the server side.
 - `mix i18n.check` extension to validate client TOMLs.
 - `web.*` keys for the existing React SPAs:
-  - `assets/js/spas/control-panel/App.jsx`
-  - `assets/js/spas/setup/App.jsx`
-  - `assets/js/spas/sessions/New.jsx`
+  - `webui/src/spas/control-panel/App.jsx`
+  - `webui/src/spas/setup/App.jsx`
+  - `webui/src/spas/sessions/New.jsx`
 
 `app.*` keys (including `app.connectivity.*`, `app.close`, `app.actions`) stay in `priv/locales/*.toml`. They are consumed by server-side HEEx components (`BullXWeb.CoreComponents`, `BullXWeb.Layouts`), not by React. Whichever side renders the markup owns the key; nothing forces the namespace to follow the prefix.
 
@@ -104,13 +104,13 @@ The server side already has:
 
 The frontend side currently has:
 
-- Vite config in `assets/vite.config.mjs`.
-- A single React/Inertia entrypoint in `assets/js/app.jsx`.
-- React pages under `assets/js/spas/**`.
+- Rsbuild config in `rsbuild.config.mjs`.
+- A single React/Inertia entrypoint in `webui/src/app.jsx`.
+- React pages under `webui/src/spas/**`.
 - Hard-coded English UI strings in those React pages.
 - No frontend i18n runtime or catalog.
 
-The gap is a Vite-bundled i18next runtime backed by a separate set of TOML files for client copy.
+The gap is an Rsbuild-bundled i18next runtime backed by a separate set of TOML files for client copy.
 
 ## 4. Design Decisions
 
@@ -175,7 +175,7 @@ React reads the active locale from `document.documentElement.lang` at i18next in
 ### 4.4 Browser runtime
 
 ```ts
-// assets/js/i18n/i18n.ts
+// webui/src/i18n/i18n.ts
 import i18n from "i18next"
 import { initReactI18next } from "react-i18next"
 import { Mf2PostProcessor, Mf2ReactPreset } from "./mf2"
@@ -209,7 +209,7 @@ i18n
 export default i18n
 ```
 
-`assets/js/i18n/mf2.ts` (~100 lines, adapted from public `mf2react` source) exports:
+`webui/src/i18n/mf2.ts` (~100 lines, adapted from public `mf2react` source) exports:
 
 - `Mf2PostProcessor` — i18next post-processor (`name: "mf2"`) that compiles each translated string with the `messageformat` package's `MessageFormat`, caches compiled messages by `${lng}__${source}`, calls `formatToParts`, and renders the result to safe HTML markup. On compile or format failure, falls back to a curly-tag-to-angle-bracket conversion of the raw source.
 - `Mf2ReactPreset` — 3rd-party plugin that flips `react.transSupportBasicHtmlNodes: true` and adds the safe alias list (`strong`, `em`, `br`, `u`, `s`, `code`, `small`) to `react.transKeepBasicHtmlNodesFor` so `<Trans>` renders those tags as JSX.
@@ -229,7 +229,7 @@ title = "Sign In"
 placeholder = "Login screen placeholder. Auth-code submission will post to {$form_action}."
 ```
 
-The Vite TOML loader (§5) parses this into a nested JS object:
+The Rsbuild TOML loader (§5) parses this into a nested JS object:
 
 ```json
 {
@@ -276,26 +276,23 @@ bold, b, strong, i, italic, em, br, u, s, code, small
 
 No arbitrary HTML, no arbitrary component names, no links / buttons / business actions in translations. Links and interactive components stay in React.
 
-## 5. Vite integration
+## 5. Rsbuild integration
 
 ### 5.1 TOML loader plugin
 
-Add a small Vite plugin to `assets/vite.config.mjs`:
+Add a small Rsbuild plugin to `rsbuild.config.mjs`:
 
 ```js
-import { readFileSync } from "node:fs"
 import { parse as parseToml } from "@iarna/toml"
 
 function tomlPlugin() {
   return {
     name: "bullx-toml",
-    transform(_src, id) {
-      if (!id.endsWith(".toml")) return null
-      const raw = readFileSync(id, "utf8")
-      return {
-        code: `export default ${JSON.stringify(parseToml(raw))}`,
+    setup(api) {
+      api.transform({ test: /\.toml$/ }, ({ code }) => ({
+        code: `export default ${JSON.stringify(parseToml(code))}`,
         map: null,
-      }
+      }))
     },
   }
 }
@@ -320,21 +317,14 @@ plugins: [
 
 ### 5.2 Dev hot reload
 
-Vite's default file watcher handles TOML changes inside `assets/` and aliased paths. To make changes under `priv/locales/client/` trigger module reload, extend the existing `phoenixPlugin` pattern or add a small watcher hook:
+Rspack watches imported TOML modules. To make changes under `priv/locales/client/` trigger a page reload consistently, add a dev watcher:
 
 ```js
-function clientLocalesPlugin() {
-  return {
-    name: "bullx-client-locales",
-    configureServer(server) {
-      server.watcher.add(resolve(appRoot, "priv/locales/client/*.toml"))
-    },
-    handleHotUpdate({ file, server }) {
-      if (!file.match(/priv\/locales\/client\/[^/]+\.toml$/)) return
-      server.ws.send({ type: "full-reload" })
-      return []
-    },
-  }
+dev: {
+  watchFiles: {
+    paths: resolve(appRoot, "priv/locales/client/*.toml"),
+    type: "reload-page",
+  },
 }
 ```
 
@@ -378,7 +368,7 @@ That is the entire server-side change.
 i18next
 react-i18next
 messageformat
-@iarna/toml          # devDependency, used by the Vite plugin
+@iarna/toml          # devDependency, used by the Rsbuild plugin
 ```
 
 Do not add `mf2react` (replicated in-tree).
@@ -388,9 +378,9 @@ Do not add `i18next-http-backend` (resources bundled at build time).
 ### 7.2 Files
 
 ```text
-assets/js/i18n/mf2.ts        # post-processor + preset (~100 lines)
-assets/js/i18n/i18n.ts       # i18next init, exports the singleton
-assets/js/i18n/provider.tsx  # <I18nextProvider> wrapper
+webui/src/i18n/mf2.ts        # post-processor + preset (~100 lines)
+webui/src/i18n/i18n.ts       # i18next init, exports the singleton
+webui/src/i18n/provider.tsx  # <I18nextProvider> wrapper
 ```
 
 ### 7.3 Provider
@@ -408,7 +398,7 @@ The provider takes no props. Active locale is fixed at module-load time from `<h
 
 ### 7.4 Inertia wiring
 
-Wrap the rendered page in the provider inside `assets/js/app.jsx`:
+Wrap the rendered page in the provider inside `webui/src/app.jsx`:
 
 ```jsx
 import { BullXI18nextProvider } from "./i18n/provider"
@@ -505,10 +495,10 @@ The two scans are independent. A server key missing in the client set is fine. A
 2. Update `root.html.heex` to use the helpers.
 3. Create `priv/locales/client/en-US.toml` and `priv/locales/client/zh-Hans-CN.toml` with the §7.6 key set.
 4. Add `i18next`, `react-i18next`, `messageformat`, and `@iarna/toml` to `package.json`.
-5. Add the TOML loader plugin and `@locales` alias to `assets/vite.config.mjs`.
-6. Add the client-locales hot-reload plugin to `assets/vite.config.mjs`.
-7. Add `assets/js/i18n/mf2.ts` (post-processor and preset).
-8. Add `assets/js/i18n/i18n.ts` (init) and `provider.tsx` (wrapper).
+5. Add the TOML loader plugin and `@locales` alias to `rsbuild.config.mjs`.
+6. Add the client-locales reload watcher to `rsbuild.config.mjs`.
+7. Add `webui/src/i18n/mf2.ts` (post-processor and preset).
+8. Add `webui/src/i18n/i18n.ts` (init) and `provider.tsx` (wrapper).
 9. Wrap `createInertiaApp`'s `setup` render in `<BullXI18nextProvider>`.
 10. Replace hard-coded React strings with `useTranslation()` and `<Trans>`.
 11. Extend `mix i18n.check` to scan `priv/locales/client/*.toml`.
@@ -524,7 +514,7 @@ The two scans are independent. A server key missing in the client set is fine. A
 
 ### 10.2 JavaScript Tests
 
-A unit test for `assets/js/i18n/mf2.ts` covering:
+A unit test for `webui/src/i18n/mf2.ts` covering:
 
 - Compiling and rendering an MF2 string with `.match`.
 - Curly-tag-to-HTML conversion for the supported alias list.

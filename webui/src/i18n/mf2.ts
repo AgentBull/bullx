@@ -87,7 +87,7 @@ function formatMf2(source: string, lng: string, values: Record<string, unknown>)
     })
 
     return renderParts(parts)
-  } catch (_error) {
+  } catch {
     return curlyTagsToHtml(source)
   }
 }

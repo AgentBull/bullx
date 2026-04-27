@@ -46,16 +46,16 @@ PostgreSQL が起動しており、`.env.dev` または `.env.local` の `DATABA
 # Elixir 依存関係、JS 依存関係、データベース、アセットを初期化
 mix setup
 
-# Phoenix を起動。Vite は開発用アセットサーバーとして起動
-iex -S mix phx.server
+# Phoenix と Rsbuild 開発用アセットサーバーを起動
+bun dev
 ```
 
 `http://localhost:4000` を開きます。
 
 ローカルの `users` テーブルが空の場合、`/` は `/setup` にリダイレクトします。少なくとも一人のユーザーが存在する場合、未ログインユーザーは `/sessions/new` に送られ、ログイン済みユーザーは `/` でコントロールパネル SPA に入ります。
 
-開発環境では Phoenix が Vite を endpoint watcher として起動します。ブラウザで開く入口は `http://localhost:4000` のままで、Vite は `http://localhost:5173` から React/Inertia の hot reload を提供します。
-これらのポートがすでに使われている場合は、`.env.local` に `PORT` と `VITE_PORT` を設定します。例: `PORT=4001`、`VITE_PORT=5174`。
+開発環境では Phoenix が Rsbuild を endpoint watcher として起動します。ブラウザで開く入口は `http://localhost:4000` のままで、Rsbuild は `http://localhost:5173` から React/Inertia の hot reload を提供します。
+これらのポートがすでに使われている場合は、`.env.local` に `PORT` と `RSBUILD_PORT` を設定します。例: `PORT=4001`、`RSBUILD_PORT=5174`。
 
 よく使うプロジェクトコマンド:
 
@@ -66,23 +66,29 @@ bun install
 
 ```sh
 # コミット前に使うプロジェクト全体のチェック
-mix precommit
+bun precommit
 ```
 
-## Vite アセットビルド
+```sh
+# フロントエンドテストとクロス言語 lint チェックを実行
+bun run test
+bun run lint
+```
 
-React/Inertia のエントリーポイントは `assets/js/app.jsx` にあり、各 SPA ページは `assets/js/spas/` 以下にあります。デプロイ可能なアセットを作るとき、Vite は `priv/static/assets/.vite/manifest.json` を書き出し、開発環境以外では Phoenix がその manifest から script と stylesheet を解決します。
-Bun はリポジトリルートから実行します。Vite は `assets/` をソース root として扱います。
+## Rsbuild アセットビルド
+
+React/Inertia のエントリーポイントは `webui/src/app.jsx` にあり、各 SPA ページは `webui/src/spas/` 以下にあります。デプロイ可能なアセットを作るとき、Rsbuild は `priv/static/assets/.rsbuild/manifest.json` を書き出し、開発環境以外では Phoenix がその manifest から script と stylesheet を解決します。
+Bun はリポジトリルートから実行します。Rsbuild はアプリケーションソースに `webui/src/`、Phoenix CSS エントリーに `assets/css/` を使います。
 
 ```sh
-# Vite アセットと manifest をビルド
+# Rsbuild アセットと manifest をビルド
 mix assets.build
 
 # 本番アセットをビルドし digest を生成
 mix assets.deploy
 ```
 
-`mix assets.deploy` はコンパイル、Vite build、`phx.digest` を実行します。本番 release を作る前に実行してください。
+`mix assets.deploy` はコンパイル、Rsbuild build、`phx.digest` を実行します。本番 release を作る前に実行してください。
 
 **本番環境：**
 

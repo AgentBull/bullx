@@ -46,7 +46,7 @@ defmodule BullXAIAgent.Quality.Checkpoint do
   @spec fast_gate_commands() :: [command_spec()]
   def fast_gate_commands do
     [
-      %{gate: :fast, label: "mix precommit", cmd: "mix", args: ["precommit"]}
+      %{gate: :fast, label: "bun precommit", cmd: "bun", args: ["precommit"]}
     ]
   end
 

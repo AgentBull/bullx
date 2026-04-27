@@ -46,16 +46,16 @@ Make sure PostgreSQL is running and `DATABASE_URL` in `.env.dev` or `.env.local`
 # Bootstrap Elixir deps, JS deps, database, and assets
 mix setup
 
-# Start Phoenix; Vite runs as the development asset server
-iex -S mix phx.server
+# Start Phoenix and the Rsbuild development asset server
+bun dev
 ```
 
 Open `http://localhost:4000`.
 
 When the local `users` table is empty, `/` redirects to `/setup`. After at least one user exists, anonymous users are sent to `/sessions/new`, and signed-in users land on the control panel at `/`.
 
-In development, Phoenix starts Vite as an endpoint watcher. The browser entry point remains `http://localhost:4000`; Vite listens on `http://localhost:5173` for React/Inertia hot reload.
-If those ports are already in use, set `PORT` and `VITE_PORT` in `.env.local`, for example `PORT=4001` and `VITE_PORT=5174`.
+In development, Phoenix starts Rsbuild as an endpoint watcher. The browser entry point remains `http://localhost:4000`; Rsbuild listens on `http://localhost:5173` for React/Inertia hot reload.
+If those ports are already in use, set `PORT` and `RSBUILD_PORT` in `.env.local`, for example `PORT=4001` and `RSBUILD_PORT=5174`.
 
 Useful project commands:
 
@@ -66,23 +66,29 @@ bun install
 
 ```sh
 # Run the full project check used before committing
-mix precommit
+bun precommit
 ```
 
-## Vite Asset Builds
+```sh
+# Run frontend tests and cross-language lint checks
+bun run test
+bun run lint
+```
 
-The React/Inertia app entry is `assets/js/app.jsx`, with SPA pages under `assets/js/spas/`. For deployable assets, Vite writes `priv/static/assets/.vite/manifest.json`, and Phoenix resolves scripts and styles from that manifest outside development.
-Run Bun from the repository root; Vite uses `assets/` as its source root.
+## Rsbuild Asset Builds
+
+The React/Inertia app entry is `webui/src/app.jsx`, with SPA pages under `webui/src/spas/`. For deployable assets, Rsbuild writes `priv/static/assets/.rsbuild/manifest.json`, and Phoenix resolves scripts and styles from that manifest outside development.
+Run Bun from the repository root; Rsbuild uses `webui/src/` for application source and `assets/css/` for the Phoenix CSS entry.
 
 ```sh
-# Build Vite assets and manifest
+# Build Rsbuild assets and manifest
 mix assets.build
 
 # Build production assets, including digests
 mix assets.deploy
 ```
 
-`mix assets.deploy` runs compilation, the Vite build, and `phx.digest`. Run it before building a production release.
+`mix assets.deploy` runs compilation, the Rsbuild build, and `phx.digest`. Run it before building a production release.
 
 **Production:**
 

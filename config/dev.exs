@@ -17,26 +17,26 @@ config :bullx, BullX.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-vite_port = BullX.Config.Bootstrap.env_integer("VITE_PORT", 5173)
+rsbuild_port = BullX.Config.Bootstrap.env_integer("RSBUILD_PORT", 5173)
 
-case vite_port in 1..65_535 do
+case rsbuild_port in 1..65_535 do
   true -> :ok
-  false -> raise "BullX.Config.Bootstrap: invalid port for VITE_PORT: #{inspect(vite_port)}"
+  false -> raise "BullX.Config.Bootstrap: invalid port for RSBUILD_PORT: #{inspect(rsbuild_port)}"
 end
 
 config :bullx, BullXWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
-  static_url: [host: "localhost", port: vite_port],
+  static_url: [host: "localhost", port: rsbuild_port],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
   watchers: [
-    vite:
-      {BullXWeb.Vite, :run,
+    rsbuild:
+      {BullXWeb.Rsbuild, :run,
        [
-         ~w(run dev),
+         ~w(run rsbuild:dev),
          [
            cd: Path.expand("..", __DIR__),
            env: %{"MIX_BUILD_PATH" => Mix.Project.build_path()}

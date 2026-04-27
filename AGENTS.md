@@ -243,7 +243,7 @@ Several Jido terms collide with more general meanings that dominate LLM training
 
 ## Project guidelines
 
-- Use `mix precommit` when you are done with all changes and fix any pending issues
+- Use `bun precommit` when you are done with all changes and fix any pending issues.
 - Use the already included `:req` (`Req`) library for HTTP requests
 - Prefer deletion over addition. If the same behavior can be preserved by removing code, remove code.
 - Reuse existing utilities and patterns first. Search before creating a new helper, module, behaviour, process, schema, or dependency.

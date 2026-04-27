@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use cedar_policy::{
-  Authorizer, Context, Decision, Effect, Entities, EntityId, EntityTypeName, EntityUid,
-  PolicySet, Request,
+  Authorizer, Context, Decision, Effect, Entities, EntityId, EntityTypeName, EntityUid, PolicySet,
+  Request,
 };
 use rustler::types::map::MapIterator;
 use rustler::{Encoder, Env, NifResult, Term, TermType};
@@ -160,7 +160,10 @@ fn build_entities(data: &RequestData) -> NifResult<Entities> {
       "uid".into(),
       JsonValue::Object({
         let mut uid = JsonMap::new();
-        uid.insert("type".into(), JsonValue::String(data.principal_type.clone()));
+        uid.insert(
+          "type".into(),
+          JsonValue::String(data.principal_type.clone()),
+        );
         uid.insert("id".into(), JsonValue::String(data.principal_id.clone()));
         uid
       }),
@@ -190,8 +193,7 @@ fn build_uid(type_name: &str, id: &str) -> NifResult<EntityUid> {
   let type_name = EntityTypeName::from_str(type_name)
     .map_err(|e| error(format!("invalid entity type {type_name:?}: {e}")))?;
 
-  let id =
-    EntityId::from_str(id).map_err(|e| error(format!("invalid entity id {id:?}: {e}")))?;
+  let id = EntityId::from_str(id).map_err(|e| error(format!("invalid entity id {id:?}: {e}")))?;
 
   Ok(EntityUid::from_type_name_and_id(type_name, id))
 }
@@ -267,9 +269,8 @@ fn atom_to_json(term: Term<'_>) -> NifResult<JsonValue> {
 }
 
 fn list_to_json(term: Term<'_>) -> NifResult<JsonValue> {
-  let iter: rustler::types::list::ListIterator = term
-    .decode()
-    .map_err(|_| error("invalid list value"))?;
+  let iter: rustler::types::list::ListIterator =
+    term.decode().map_err(|_| error("invalid list value"))?;
 
   let mut values = Vec::new();
   for element in iter {
@@ -283,9 +284,7 @@ fn map_to_json(term: Term<'_>) -> NifResult<JsonValue> {
   let mut object = JsonMap::new();
 
   for (k, v) in MapIterator::new(term).ok_or_else(|| error("invalid map value"))? {
-    let key: String = k
-      .decode()
-      .map_err(|_| error("map keys must be strings"))?;
+    let key: String = k.decode().map_err(|_| error("map keys must be strings"))?;
 
     object.insert(key, term_to_json(v)?);
   }

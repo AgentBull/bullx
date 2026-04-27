@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "@rstest/core"
 import {
   clearMf2CacheForTest,
   formatMf2ForTest,

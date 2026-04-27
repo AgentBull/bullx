@@ -11,7 +11,7 @@ config :bullx, BullXWeb.Endpoint, cache_static_manifest: "priv/static/cache_mani
 
 config :bullx, session_cookie_secure: true
 
-config :bullx, :vite, manifest_required?: true
+config :bullx, :rsbuild, manifest_required?: true
 
 # Force using SSL in production. This also sets the "strict-security-transport" header,
 # known as HSTS. If you have a health check endpoint, you may want to exclude it below.
