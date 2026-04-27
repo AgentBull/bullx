@@ -7,6 +7,7 @@ defmodule BullXWeb do
 
       use BullXWeb, :controller
       use BullXWeb, :html
+      use BullXWeb, :router
 
   The definitions below will be executed for every controller,
   component, etc, so keep them short and clean, focused
@@ -17,7 +18,7 @@ defmodule BullXWeb do
   those modules here.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
+  def static_paths, do: ~w(js css assets images .rsbuild favicon.ico robots.txt)
 
   def router do
     quote do
@@ -26,7 +27,6 @@ defmodule BullXWeb do
       # Import common connection and controller functions to use in pipelines
       import Plug.Conn
       import Phoenix.Controller
-      import Phoenix.LiveView.Router
     end
   end
 
@@ -45,22 +45,6 @@ defmodule BullXWeb do
       import BullXWeb.I18n.HTML, only: [t: 1, t: 2, t: 3]
 
       unquote(verified_routes())
-    end
-  end
-
-  def live_view do
-    quote do
-      use Phoenix.LiveView
-
-      unquote(html_helpers())
-    end
-  end
-
-  def live_component do
-    quote do
-      use Phoenix.LiveComponent
-
-      unquote(html_helpers())
     end
   end
 
@@ -86,11 +70,8 @@ defmodule BullXWeb do
 
       # HTML escaping functionality
       import Phoenix.HTML
-      # Core UI components
-      import BullXWeb.CoreComponents
 
       # Common modules used in templates
-      alias Phoenix.LiveView.JS
       alias BullXWeb.Layouts
 
       # Routes generation with the ~p sigil
@@ -108,7 +89,7 @@ defmodule BullXWeb do
   end
 
   @doc """
-  When used, dispatch to the appropriate controller/live_view/etc.
+  When used, dispatch to the appropriate controller/component/etc.
   """
   defmacro __using__(which) when is_atom(which) do
     apply(__MODULE__, which, [])

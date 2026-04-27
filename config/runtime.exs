@@ -34,8 +34,7 @@ config :bullx, BullXWeb.Endpoint, http: [port: port]
 secret_base = BullX.Config.Bootstrap.env!("BULLX_SECRET_BASE", & &1)
 
 config :bullx, BullXWeb.Endpoint,
-  secret_key_base: BullX.Ext.derive_key(secret_base, "phoenix.secret_key_base"),
-  live_view: [signing_salt: BullX.Ext.derive_key(secret_base, "liveview.signing_salt")]
+  secret_key_base: BullX.Ext.derive_key(secret_base, "phoenix.secret_key_base")
 
 if config_env() == :prod do
   database_url = BullX.Config.Bootstrap.env!("DATABASE_URL", & &1)

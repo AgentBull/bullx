@@ -67,20 +67,7 @@ config :bullx, BullXWeb.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
-# Reload browser tabs when matching files change.
-config :bullx, BullXWeb.Endpoint,
-  live_reload: [
-    web_console_logger: true,
-    patterns: [
-      # I18n translations
-      ~r"priv/locales/.*\.toml$",
-      # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/bullx_web/router\.ex$",
-      ~r"lib/bullx_web/(controllers|live|components)/.*\.(ex|heex)$"
-    ]
-  ]
-
-# Enable dev routes for dashboard and mailbox
+# Enable dev routes for mailbox preview and Swagger UI
 config :bullx, dev_routes: true
 
 # Do not include metadata nor timestamps in development logs
@@ -92,14 +79,6 @@ config :phoenix, :stacktrace_depth, 20
 
 # Initialize plugs at runtime for faster development compilation
 config :phoenix, :plug_init_mode, :runtime
-
-config :phoenix_live_view,
-  # Include debug annotations and locations in rendered markup.
-  # Changing this configuration will require mix clean and a full recompile.
-  debug_heex_annotations: true,
-  debug_attributes: true,
-  # Enable helpful, but potentially expensive runtime checks
-  enable_expensive_runtime_checks: true
 
 config :open_api_spex, :cache_adapter, OpenApiSpex.Plug.NoneCache
 

@@ -40,6 +40,32 @@ mix test         # run the Elixir test suite
 bun precommit    # full precommit gate — must pass before committing
 ```
 
+### Storybook and UI kit work
+
+BullX uses Storybook for `webui/src/uikit` component development and visual
+review. Stories live in `webui/src/uikit/stories/`, while Storybook config lives
+under `.storybook/`.
+
+```sh
+bun run storybook        # start Storybook on http://localhost:6006
+bun run build-storybook  # build the static Storybook bundle
+```
+
+Use Storybook when changing UI kit components, design tokens, or global UI
+styles. Check the relevant component stories in both light and dark themes
+before calling a visual change done. The theme toggle in the Storybook toolbar
+sets `data-theme`, matching the app token model.
+
+For focused visual debugging, open the iframe URL directly, for example:
+
+```text
+http://localhost:6006/iframe.html?id=components-card--default&globals=theme:dark&viewMode=story
+```
+
+UI kit styles and assets should flow through Rsbuild. Keep shared tokens in
+`webui/src/globals.css`, keep component stories close to the component surface
+they document, and do not add Phoenix static handling for Storybook-only needs.
+
 ## Architecture overview
 
 BullX is organized into subsystems, all booting under a single OTP supervision tree. Before contributing to a specific area, read [`AGENTS.md`](AGENTS.md) for the subsystem descriptions, coding conventions, and any non-obvious design constraints.

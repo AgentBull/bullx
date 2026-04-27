@@ -10,7 +10,6 @@ defmodule BullX.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
-      compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader]
     ]
   end
@@ -40,11 +39,8 @@ defmodule BullX.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
       {:phoenix_html, "~> 4.1"},
-      {:phoenix_live_reload, "~> 1.2", only: :dev},
-      {:phoenix_live_view, "~> 1.1.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:rustler, "~> 0.37.3", runtime: false},
-      {:phoenix_live_dashboard, "~> 0.8.3"},
       {:inertia, "~> 2.6"},
       {:open_api_spex, "~> 3.22"},
       {:jido, "~> 2.2"},
@@ -55,13 +51,6 @@ defmodule BullX.MixProject do
       {:nimble_options, "~> 1.1"},
       {:splode, "~> 0.3.0"},
       {:yaml_elixir, "~> 2.12"},
-      {:heroicons,
-       github: "tailwindlabs/heroicons",
-       tag: "v2.2.0",
-       sparse: "optimized",
-       app: false,
-       compile: false,
-       depth: 1},
       {:swoosh, "~> 1.16"},
       {:feishu_openapi, path: "packages/feishu_openapi"},
       {:req, "~> 0.5"},

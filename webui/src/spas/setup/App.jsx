@@ -7,7 +7,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
+} from "@/uikit/components/card"
 
 export default function SetupApp({ app_name }) {
   const { t } = useTranslation()

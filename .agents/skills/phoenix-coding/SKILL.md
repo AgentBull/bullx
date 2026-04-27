@@ -455,7 +455,6 @@ end
 
 - Comments: `<%!-- comment --%>`
 - Wrap LiveView templates with `<Layouts.app flash={@flash} ...>`
-- Use `<.icon>` for Heroicons, `<.input>` from `core_components.ex`
 - `Phoenix.View` is obsolete — don't use it
 
 ### embed_templates

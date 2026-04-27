@@ -1,14 +1,14 @@
 import React from "react"
 import { Head } from "@inertiajs/react"
 import { useTranslation } from "react-i18next"
-import { Button } from "@/components/ui/button"
+import { Button } from "@/uikit/components/button"
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
+} from "@/uikit/components/card"
 
 const sections = ["sessions", "approvals", "observability"]
 
@@ -67,18 +67,23 @@ export default function ControlPanelApp({ app_name, current_user, swagger_ui_pat
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button asChild className="w-full justify-between">
-                <a href="/.well-known/service-desc">
-                  {t("web.control_panel.openapi_json")}
-                  <span aria-hidden="true">/.well-known/service-desc</span>
-                </a>
+              <Button
+                className="w-full justify-between"
+                nativeButton={false}
+                render={<a href="/.well-known/service-desc" />}
+              >
+                {t("web.control_panel.openapi_json")}
+                <span aria-hidden="true">/.well-known/service-desc</span>
               </Button>
               {swagger_ui_path && (
-                <Button asChild variant="outline" className="w-full justify-between">
-                  <a href={swagger_ui_path}>
-                    {t("web.control_panel.swagger_ui")}
-                    <span aria-hidden="true">{swagger_ui_path}</span>
-                  </a>
+                <Button
+                  variant="outline"
+                  className="w-full justify-between"
+                  nativeButton={false}
+                  render={<a href={swagger_ui_path} />}
+                >
+                  {t("web.control_panel.swagger_ui")}
+                  <span aria-hidden="true">{swagger_ui_path}</span>
                 </Button>
               )}
             </CardContent>

@@ -55,7 +55,7 @@ export default defineConfig({
   source: {
     entry: {
       app: {
-        import: ["./webui/src/app.jsx", "./assets/css/app.css"],
+        import: ["./webui/src/app.jsx", "./webui/src/globals.css"],
         html: false,
       },
     },
@@ -85,9 +85,9 @@ export default defineConfig({
     },
   },
   output: {
-    cleanDistPath: true,
+    cleanDistPath: false,
     distPath: {
-      root: resolve(appRoot, "priv/static/assets"),
+      root: resolve(appRoot, "priv/static"),
       js: "js",
       jsAsync: "js",
       css: "css",
@@ -107,13 +107,6 @@ export default defineConfig({
     alias: {
       "@": webuiRoot,
       "@locales": resolve(appRoot, "priv/locales/client"),
-      phoenix: resolve(appRoot, "deps/phoenix/priv/static/phoenix.mjs"),
-      phoenix_html: resolve(appRoot, "deps/phoenix_html/priv/static/phoenix_html.js"),
-      phoenix_live_view: resolve(
-        appRoot,
-        "deps/phoenix_live_view/priv/static/phoenix_live_view.esm.js",
-      ),
-      "phoenix-colocated": resolve(appRoot, "_build", mixEnv, "phoenix-colocated"),
     },
   },
   tools: {

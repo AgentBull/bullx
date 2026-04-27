@@ -1,7 +1,7 @@
 import React from "react"
 import { Head } from "@inertiajs/react"
 import { useTranslation } from "react-i18next"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent } from "@/uikit/components/card"
 
 export default function SessionsNew({ form_action }) {
   const { t } = useTranslation()

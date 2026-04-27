@@ -4,15 +4,15 @@ defmodule BullXWeb.Rsbuild do
 
   Development requests are served by the Rsbuild dev server. Production
   requests are resolved from Rsbuild's manifest under
-  `priv/static/assets/.rsbuild/manifest.json`.
+  `priv/static/.rsbuild/manifest.json`.
   """
 
   use Phoenix.Component
 
   alias BullXWeb.Rsbuild.Manifest
 
-  @asset_prefix "/assets"
-  @default_manifest {:bullx, "priv/static/assets/.rsbuild/manifest.json"}
+  @asset_prefix "/"
+  @default_manifest {:bullx, "priv/static/.rsbuild/manifest.json"}
   @default_entries ["app"]
   @default_dev_files ["css/app.css", "js/app.js"]
 
@@ -189,7 +189,6 @@ defmodule BullXWeb.Rsbuild do
     ~H"""
     <script
       :if={script_file?(@file)}
-      phx-track-static
       type="module"
       crossorigin={@crossorigin}
       src={dev_server_url(@dev_origin, @file)}
@@ -198,7 +197,6 @@ defmodule BullXWeb.Rsbuild do
     </script>
     <link
       :if={css_file?(@file)}
-      phx-track-static
       rel="stylesheet"
       crossorigin={@crossorigin}
       href={dev_server_url(@dev_origin, @file)}
@@ -216,7 +214,6 @@ defmodule BullXWeb.Rsbuild do
     ~H"""
     <script
       :if={script_file?(@file)}
-      phx-track-static
       type="module"
       crossorigin={@crossorigin}
       src={static_asset_path(@file, @cache)}
@@ -225,7 +222,6 @@ defmodule BullXWeb.Rsbuild do
     </script>
     <link
       :if={css_file?(@file)}
-      phx-track-static
       rel="stylesheet"
       crossorigin={@crossorigin}
       href={static_asset_path(@file, @cache)}

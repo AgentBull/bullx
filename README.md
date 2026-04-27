@@ -15,6 +15,8 @@ BullX is a highly available, self-evolving, and self-healing AI Agent Operating 
 
 ### Production-Grade Runtime
 
+Further context: [Why OTP is a better runtime for multi-agent orchestration](https://ding.ee/en-US/why-otp-is-a-better-runtime-for-multi-agent-orchestration/) explains why Elixir/OTP is central to BullX's design.
+
 - **Highly Available** — Built on Elixir and Erlang/OTP, a carrier-grade, fault-tolerant language and runtime. Supervision trees handle process scheduling, state ownership, failure isolation, and restart recovery as first-class primitives, so BullX recovers from failures automatically and keeps running through partial outages.
 - **Durable State on PostgreSQL** — PostgreSQL is the system of record for sessions, memory, and knowledge, giving BullX transactional writes, replication, and point-in-time recovery out of the box — no bespoke on-disk formats to evolve or migrate.
 - **Self-Healing** — Individual agent processes can crash without affecting the rest of the system; supervisors restart them in a known-good state, isolating faults at the process boundary.

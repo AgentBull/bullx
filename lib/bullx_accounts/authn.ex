@@ -638,7 +638,7 @@ defmodule BullXAccounts.AuthN do
     end)
   end
 
-  defp stringify_map(_map), do: {:error, :invalid_map}
+  defp stringify_map(_), do: {:error, :invalid_map}
 
   defp stringify_key(key) when is_binary(key), do: {:ok, key}
   defp stringify_key(key) when is_atom(key), do: {:ok, Atom.to_string(key)}

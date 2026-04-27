@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["../webui/src/*"],
+      "@/common/*": ["../webui/src/common/*"],
+      "@/uikit/*": ["../webui/src/uikit/*"]
+    },
+    "allowJs": true
+  },
+  "include": ["../webui/src/**/*", "./**/*"]
+}

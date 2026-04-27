@@ -2,6 +2,19 @@
 // Rsbuild resolves Phoenix JavaScript packages through aliases in rsbuild.config.ts.
 {
   "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": false,
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "esModuleInterop": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
     "paths": {
       "@/*": ["./webui/src/*"],
       "@locales/*": ["./priv/locales/client/*"]
