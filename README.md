@@ -44,7 +44,7 @@ Make sure PostgreSQL is running and `DATABASE_URL` in `.env.dev` or `.env.local`
 
 ```sh
 # Bootstrap Elixir deps, JS deps, database, and assets
-mix setup
+bun setup
 
 # Start Phoenix and the Rsbuild development asset server
 bun dev

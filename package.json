@@ -1,6 +1,7 @@
 {
   "packageManager": "bun@1.3.13",
   "scripts": {
+    "setup": "mix deps.get && mix ecto.setup && bun install && mix assets.build",
     "dev": "iex -S mix phx.server",
     "rsbuild:dev": "bun --bun rsbuild dev",
     "build": "bun --bun rsbuild build",

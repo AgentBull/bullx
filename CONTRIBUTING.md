@@ -10,11 +10,12 @@ Thank you for your interest in contributing to BullX! We welcome bug reports, fe
 
 - Elixir 1.20+
 - PostgreSQL 18+
+- Bun
 
 ### First run
 
 ```sh
-mix setup              # install deps, create and migrate the database, build assets
+bun setup              # install deps, create and migrate the database, build assets
 bun dev                # start Phoenix and the Rsbuild dev server
 ```
 

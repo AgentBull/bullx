@@ -44,7 +44,7 @@ BullX 是一个高可用、自演化、自愈的 AI Agent 操作系统，基于 
 
 ```sh
 # 初始化 Elixir 依赖、JS 依赖、数据库和资产
-mix setup
+bun setup
 
 # 启动 Phoenix 和 Rsbuild 开发资源服务
 bun dev

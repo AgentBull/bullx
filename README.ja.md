@@ -44,7 +44,7 @@ PostgreSQL が起動しており、`.env.dev` または `.env.local` の `DATABA
 
 ```sh
 # Elixir 依存関係、JS 依存関係、データベース、アセットを初期化
-mix setup
+bun setup
 
 # Phoenix と Rsbuild 開発用アセットサーバーを起動
 bun dev
