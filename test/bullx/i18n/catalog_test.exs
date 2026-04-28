@@ -57,14 +57,14 @@ defmodule BullX.I18n.CatalogTest do
 
   test "reload_locales!/0 drops stale locales from persistent_term" do
     Resolver.put_catalog(:"xx-Test", %{}, %{fallback: "en-US"})
-    loaded = Resolver.loaded() |> MapSet.to_list()
+    loaded = Resolver.loaded() |> Map.keys()
     Resolver.put_loaded([:"xx-Test" | loaded])
 
     assert %{fallback: "en-US"} = Resolver.meta(:"xx-Test")
 
     assert :ok = BullX.I18n.Catalog.reload_locales!()
 
-    refute MapSet.member?(Resolver.loaded(), :"xx-Test")
+    refute Map.has_key?(Resolver.loaded(), :"xx-Test")
     assert Resolver.meta(:"xx-Test") == %{}
   end
 

@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@iarna/toml": "^3.0.0",
-    "@rsbuild/core": "^2.0.2",
+    "@rsbuild/core": "^2.0.3",
     "@rsbuild/plugin-react": "^2.0.0",
     "@rslint/core": "^0.5.1",
     "@rstest/adapter-rsbuild": "^0.2.6",

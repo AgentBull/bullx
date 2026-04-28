@@ -47,7 +47,7 @@ defmodule BullXAccounts.AuthZ.ComputedGroup do
     root_group_id = Keyword.get(opts, :root_group_id)
     root_group_name = Keyword.get(opts, :root_group_name)
 
-    do_validate(expression, mode, root_group_id, root_group_name, MapSet.new())
+    do_validate(expression, mode, root_group_id, root_group_name, %{})
   end
 
   @doc """
@@ -59,7 +59,7 @@ defmodule BullXAccounts.AuthZ.ComputedGroup do
   """
   @spec evaluate(expression(), User.t(), keyword()) :: boolean()
   def evaluate(expression, %User{} = user, opts \\ []) do
-    visited = Keyword.get(opts, :visited, MapSet.new())
+    visited = Keyword.get(opts, :visited, %{})
     group_id = Keyword.get(opts, :group_id)
 
     case do_evaluate(expression, user, visited) do
@@ -228,7 +228,7 @@ defmodule BullXAccounts.AuthZ.ComputedGroup do
         :ok
 
       %UserGroup{type: :computed, id: group_id, computed_expression: expression} ->
-        case MapSet.member?(visited, group_id) do
+        case Map.has_key?(visited, group_id) do
           true ->
             {:error, :cycle_detected}
 
@@ -238,7 +238,7 @@ defmodule BullXAccounts.AuthZ.ComputedGroup do
               :write,
               root_group_id,
               root_group_name,
-              MapSet.put(visited, group_id)
+              Map.put(visited, group_id, true)
             )
         end
     end
@@ -306,10 +306,10 @@ defmodule BullXAccounts.AuthZ.ComputedGroup do
         {:ok, member_of_static_group?(user.id, group_id)}
 
       %UserGroup{type: :computed, id: group_id, computed_expression: expression} ->
-        if MapSet.member?(visited, group_id) do
+        if Map.has_key?(visited, group_id) do
           {:error, :cycle_detected}
         else
-          do_evaluate(expression, user, MapSet.put(visited, group_id))
+          do_evaluate(expression, user, Map.put(visited, group_id, true))
         end
     end
   end

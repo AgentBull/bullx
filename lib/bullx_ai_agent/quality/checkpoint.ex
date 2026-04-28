@@ -174,12 +174,12 @@ defmodule BullXAIAgent.Quality.Checkpoint do
   """
   @spec missing_story_ids([String.t()], [String.t()], keyword()) :: [String.t()]
   def missing_story_ids(traceability_story_ids, commit_story_ids, opts \\ []) do
-    allowed_missing = opts |> Keyword.get(:allow_missing, []) |> MapSet.new()
-    commit_story_set = MapSet.new(commit_story_ids)
+    allowed_missing = opts |> Keyword.get(:allow_missing, []) |> Map.new(&{&1, true})
+    commit_story_set = Map.new(commit_story_ids, &{&1, true})
 
     traceability_story_ids
     |> Enum.reject(fn story_id ->
-      MapSet.member?(commit_story_set, story_id) or MapSet.member?(allowed_missing, story_id)
+      Map.has_key?(commit_story_set, story_id) or Map.has_key?(allowed_missing, story_id)
     end)
     |> Enum.sort()
   end

@@ -101,7 +101,7 @@ defmodule BullX.I18n.Catalog do
       end
 
       ids = Map.keys(locales)
-      current = Resolver.loaded() |> MapSet.to_list()
+      current = Resolver.loaded() |> Map.keys()
 
       Enum.each(current -- ids, &Resolver.drop_catalog/1)
 
@@ -135,7 +135,7 @@ defmodule BullX.I18n.Catalog do
           {:error, exception}
       end
     else
-      available = loaded |> MapSet.to_list() |> Enum.sort() |> Enum.map(&Atom.to_string/1)
+      available = loaded |> Map.keys() |> Enum.sort() |> Enum.map(&Atom.to_string/1)
 
       {:error,
        %ArgumentError{
@@ -193,7 +193,7 @@ defmodule BullX.I18n.Catalog do
       ids = Map.keys(locales)
       :ok = sync_supported_locales(ids)
 
-      current = Resolver.loaded() |> MapSet.to_list()
+      current = Resolver.loaded() |> Map.keys()
 
       Enum.each(current -- ids, &Resolver.drop_catalog/1)
 
@@ -247,12 +247,6 @@ defmodule BullX.I18n.Catalog do
       {:ok, %Localize.LanguageTag{cldr_locale_id: id} = tag} when is_atom(id) ->
         {:ok, tag}
 
-      {:ok, _tag} ->
-        {:error,
-         %ArgumentError{
-           message: "locale #{inspect(locale)} did not resolve to a CLDR locale identifier"
-         }}
-
       {:error, exception} ->
         {:error, exception}
     end
@@ -266,10 +260,10 @@ defmodule BullX.I18n.Catalog do
   end
 
   defp exact_loaded_locale(locale, loaded) when is_binary(locale) do
-    Enum.find(loaded, fn loaded_locale ->
+    loaded
+    |> Map.keys()
+    |> Enum.find(fn loaded_locale ->
       Atom.to_string(loaded_locale) == locale
     end)
   end
-
-  defp exact_loaded_locale(_locale, _loaded), do: nil
 end

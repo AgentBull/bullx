@@ -81,11 +81,11 @@ defmodule BullXAIAgent.Skill.Prompt do
     if allowed == [] do
       tools
     else
-      allowed_set = MapSet.new(allowed)
+      allowed_set = Map.new(allowed, &{&1, true})
 
       Enum.filter(tools, fn tool ->
         tool_name = get_tool_name(tool)
-        MapSet.member?(allowed_set, tool_name)
+        Map.has_key?(allowed_set, tool_name)
       end)
     end
   end

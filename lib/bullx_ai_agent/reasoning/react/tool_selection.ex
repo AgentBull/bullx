@@ -65,9 +65,9 @@ defmodule BullXAIAgent.Reasoning.ReAct.ToolSelection do
   def filter_allowed(tools, allowed_tools) when is_map(tools) and is_list(allowed_tools) do
     case normalize_allowed_tools(allowed_tools) do
       {:ok, normalized_allowed} ->
-        allowed_set = MapSet.new(normalized_allowed)
-        available = Map.keys(tools) |> MapSet.new()
-        unknown = MapSet.difference(allowed_set, available) |> MapSet.to_list() |> Enum.sort()
+        allowed_set = Map.new(normalized_allowed, &{&1, true})
+        available = Map.new(Map.keys(tools), &{&1, true})
+        unknown = Map.drop(allowed_set, Map.keys(available)) |> Map.keys() |> Enum.sort()
 
         if unknown == [] do
           {:ok, Map.take(tools, normalized_allowed)}

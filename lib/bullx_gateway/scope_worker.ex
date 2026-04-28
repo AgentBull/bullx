@@ -552,7 +552,6 @@ defmodule BullXGateway.ScopeWorker do
   end
 
   defp exception_module(%mod{}), do: Atom.to_string(mod)
-  defp exception_module(_), do: "unknown"
 
   defp publish_outcome_signal(state, delivery, %Outcome{} = outcome) do
     {adapter, channel_id} = state.channel

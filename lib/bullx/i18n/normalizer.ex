@@ -123,7 +123,6 @@ defmodule BullX.I18n.Normalizer do
     Map.put(acc, key, canonical)
   end
 
-  defp format_parse_error(%_{} = exception), do: Exception.message(exception)
   defp format_parse_error(reason), do: to_string(reason)
 
   defp rich_leaf?(%{@mf2_marker => true} = map) do

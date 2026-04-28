@@ -121,11 +121,11 @@ defmodule BullXAIAgent.Retrieval.Store do
     q_terms = token_set(query)
     t_terms = token_set(text)
 
-    if MapSet.size(q_terms) == 0 or MapSet.size(t_terms) == 0 do
+    if map_size(q_terms) == 0 or map_size(t_terms) == 0 do
       0.0
     else
-      intersection = MapSet.intersection(q_terms, t_terms) |> MapSet.size()
-      union = MapSet.union(q_terms, t_terms) |> MapSet.size()
+      intersection = Map.take(q_terms, Map.keys(t_terms)) |> map_size()
+      union = Map.merge(q_terms, t_terms) |> map_size()
       if union == 0, do: 0.0, else: intersection / union
     end
   end
@@ -135,7 +135,7 @@ defmodule BullXAIAgent.Retrieval.Store do
     |> String.downcase()
     |> String.replace(~r/[^a-z0-9\s]/u, " ")
     |> String.split(~r/\s+/, trim: true)
-    |> MapSet.new()
+    |> Map.new(&{&1, true})
   end
 
   defp create_table! do

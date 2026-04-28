@@ -49,7 +49,7 @@ defmodule BullX.I18n.Resolver do
 
   @spec put_loaded([atom()]) :: :ok
   def put_loaded(locales) when is_list(locales) do
-    :persistent_term.put(@loaded_key, MapSet.new(locales))
+    :persistent_term.put(@loaded_key, Map.new(locales, &{&1, true}))
     clear_chain_cache()
     :ok
   end
@@ -61,14 +61,14 @@ defmodule BullX.I18n.Resolver do
     :ok
   end
 
-  @spec loaded() :: MapSet.t(atom())
+  @spec loaded() :: %{atom() => true}
   def loaded do
-    :persistent_term.get(@loaded_key, MapSet.new())
+    :persistent_term.get(@loaded_key, %{})
   end
 
   @spec loaded_list() :: [atom()]
   def loaded_list do
-    loaded() |> MapSet.to_list() |> Enum.sort()
+    loaded() |> Map.keys() |> Enum.sort()
   end
 
   @spec messages(atom()) :: %{String.t() => String.t()} | nil
@@ -142,7 +142,7 @@ defmodule BullX.I18n.Resolver do
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
-    |> Enum.filter(&MapSet.member?(loaded, &1))
+    |> Enum.filter(&Map.has_key?(loaded, &1))
   end
 
   defp meta_fallback_atom(locale, loaded) do
@@ -156,22 +156,20 @@ defmodule BullX.I18n.Resolver do
   end
 
   defp default_locale_atom(loaded) do
-    case Localize.default_locale() do
-      %Localize.LanguageTag{} = tag ->
-        exact_loaded_locale(tag.requested_locale_id, loaded) ||
-          exact_loaded_locale(tag.cldr_locale_id, loaded)
+    %Localize.LanguageTag{} = tag = Localize.default_locale()
 
-      _ ->
-        nil
-    end
+    exact_loaded_locale(tag.requested_locale_id, loaded) ||
+      exact_loaded_locale(tag.cldr_locale_id, loaded)
   end
 
   defp exact_loaded_locale(locale, loaded) when is_atom(locale) do
-    if MapSet.member?(loaded, locale), do: locale
+    if Map.has_key?(loaded, locale), do: locale
   end
 
   defp exact_loaded_locale(locale, loaded) when is_binary(locale) do
-    Enum.find(loaded, fn loaded_locale ->
+    loaded
+    |> Map.keys()
+    |> Enum.find(fn loaded_locale ->
       Atom.to_string(loaded_locale) == locale
     end)
   end

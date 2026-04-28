@@ -198,7 +198,7 @@ defmodule BullX.I18n do
   end
 
   defp loaded_locale(locale) when is_atom(locale) do
-    if MapSet.member?(Resolver.loaded(), locale) do
+    if Map.has_key?(Resolver.loaded(), locale) do
       {:ok, locale}
     else
       {:error, unknown_locale_error(locale)}
@@ -222,23 +222,19 @@ defmodule BullX.I18n do
       {:ok, %Localize.LanguageTag{cldr_locale_id: id} = tag} when is_atom(id) ->
         {:ok, tag}
 
-      {:ok, _tag} ->
-        {:error,
-         %ArgumentError{
-           message: "locale #{inspect(locale)} did not resolve to a CLDR locale identifier"
-         }}
-
       {:error, exception} ->
         {:error, exception}
     end
   end
 
   defp exact_loaded_locale(locale) when is_atom(locale) do
-    if MapSet.member?(Resolver.loaded(), locale), do: locale
+    if Map.has_key?(Resolver.loaded(), locale), do: locale
   end
 
   defp exact_loaded_locale(locale) when is_binary(locale) do
-    Enum.find(Resolver.loaded(), fn loaded_locale ->
+    Resolver.loaded()
+    |> Map.keys()
+    |> Enum.find(fn loaded_locale ->
       Atom.to_string(loaded_locale) == locale
     end)
   end

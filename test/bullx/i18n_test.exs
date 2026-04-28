@@ -118,7 +118,7 @@ defmodule BullX.I18nTest do
       alias BullX.I18n.Resolver
       Resolver.put_catalog(:"xx-Test", %{}, %{fallback: "en-US"})
       original = Resolver.loaded()
-      Resolver.put_loaded(Enum.uniq([:"xx-Test" | MapSet.to_list(original)]))
+      Resolver.put_loaded(Enum.uniq([:"xx-Test" | Map.keys(original)]))
 
       on_exit(fn -> BullX.I18n.Catalog.reload_locales!() end)
 

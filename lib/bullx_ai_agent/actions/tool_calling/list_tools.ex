@@ -127,10 +127,10 @@ defmodule BullXAIAgent.Actions.ToolCalling.ListTools do
   defp filter_by_allowlist(tools, nil), do: tools
 
   defp filter_by_allowlist(tools, allowed_tools) when is_list(allowed_tools) do
-    allowed_set = MapSet.new(allowed_tools)
+    allowed_set = Map.new(allowed_tools, &{&1, true})
 
     Enum.filter(tools, fn {name, _module} ->
-      MapSet.member?(allowed_set, name)
+      Map.has_key?(allowed_set, name)
     end)
   end
 

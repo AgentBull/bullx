@@ -19,6 +19,7 @@ defmodule BullXFeishu.DirectCommand do
           channel_id: String.t(),
           chat_id: String.t(),
           chat_type: String.t() | nil,
+          thread_id: String.t() | nil,
           message_id: String.t() | nil,
           actor: map(),
           account_input: map(),

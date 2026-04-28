@@ -32,7 +32,6 @@ defmodule BullXAccounts.AuthZ.Cedar do
       case BullX.Ext.cedar_condition_validate(condition) do
         true -> :ok
         {:error, reason} -> {:error, to_string(reason)}
-        _other -> {:error, "unexpected cedar response"}
       end
     rescue
       ErlangError -> {:error, @nif_unavailable_reason}
@@ -55,7 +54,6 @@ defmodule BullXAccounts.AuthZ.Cedar do
       case BullX.Ext.cedar_condition_eval(condition, cedar_request(request)) do
         result when is_boolean(result) -> {:ok, result}
         {:error, reason} -> {:error, to_string(reason)}
-        _other -> {:error, "unexpected cedar response"}
       end
     rescue
       ErlangError -> {:error, @nif_unavailable_reason}
@@ -85,9 +83,6 @@ defmodule BullXAccounts.AuthZ.Cedar do
 
         {:error, reason} ->
           {:error, to_string(reason)}
-
-        _other ->
-          {:error, "unexpected cedar response"}
       end
     rescue
       ErlangError -> {:error, @nif_unavailable_reason}

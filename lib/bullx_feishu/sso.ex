@@ -202,7 +202,7 @@ defmodule BullXFeishu.SSO do
     |> phone_candidates()
     |> Enum.find_value(fn candidate ->
       case BullX.Ext.phone_normalize_e164(candidate) do
-        {:ok, normalized} -> normalized
+        normalized when is_binary(normalized) -> normalized
         _ -> nil
       end
     end)

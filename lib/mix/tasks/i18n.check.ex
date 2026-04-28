@@ -87,7 +87,7 @@ defmodule Mix.Tasks.I18n.Check do
 
   defp catalog_drift(label, locales) do
     source_keys = locales |> Map.fetch!(@source_locale) |> Map.fetch!(:messages) |> Map.keys()
-    source_set = MapSet.new(source_keys)
+    source_set = Map.new(source_keys, &{&1, true})
 
     source_vars =
       for {key, message} <- locales[@source_locale].messages, into: %{} do
@@ -97,17 +97,17 @@ defmodule Mix.Tasks.I18n.Check do
     locales
     |> Enum.reject(fn {locale, _} -> locale == @source_locale end)
     |> Enum.flat_map(fn {locale, %{messages: messages}} ->
-      keys = messages |> Map.keys() |> MapSet.new()
-      extra = MapSet.difference(keys, source_set)
+      keys = Map.new(messages, fn {k, _} -> {k, true} end)
+      extra = Map.drop(keys, Map.keys(source_set))
 
       extra_errors =
-        for key <- Enum.sort(extra) do
+        for key <- extra |> Map.keys() |> Enum.sort() do
           "#{label}: #{locale}: key #{inspect(key)} not present in source locale #{inspect(@source_locale)}"
         end
 
       var_errors =
         for {key, message} <- messages,
-            MapSet.member?(source_set, key),
+            Map.has_key?(source_set, key),
             mismatch = variable_mismatch(source_vars, key, message),
             mismatch != nil do
           "#{label}: #{locale}: key #{inspect(key)} — #{mismatch}"
@@ -130,12 +130,12 @@ defmodule Mix.Tasks.I18n.Check do
   end
 
   defp variable_mismatch(source_vars, key, translation) do
-    source = Map.get(source_vars, key, MapSet.new())
+    source = Map.get(source_vars, key, %{})
     actual = mf2_variables(translation)
-    missing = MapSet.difference(source, actual)
-    extra = MapSet.difference(actual, source)
+    missing = Map.drop(source, Map.keys(actual))
+    extra = Map.drop(actual, Map.keys(source))
 
-    case {MapSet.size(missing), MapSet.size(extra)} do
+    case {map_size(missing), map_size(extra)} do
       {0, 0} ->
         nil
 
@@ -150,10 +150,10 @@ defmodule Mix.Tasks.I18n.Check do
   end
 
   defp maybe_append(acc, set, label) do
-    if MapSet.size(set) == 0 do
+    if map_size(set) == 0 do
       acc
     else
-      acc ++ [label <> (set |> MapSet.to_list() |> Enum.sort() |> Enum.join(", "))]
+      acc ++ [label <> (set |> Map.keys() |> Enum.sort() |> Enum.join(", "))]
     end
   end
 
@@ -168,8 +168,8 @@ defmodule Mix.Tasks.I18n.Check do
   end
 
   defp required_variables(ast) do
-    {variables, locals} = collect_variables(ast, MapSet.new(), MapSet.new())
-    MapSet.difference(variables, locals)
+    {variables, locals} = collect_variables(ast, %{}, %{})
+    Map.drop(variables, Map.keys(locals))
   end
 
   defp collect_variables(list, variables, locals) when is_list(list) do
@@ -185,7 +185,7 @@ defmodule Mix.Tasks.I18n.Check do
 
   defp collect_variables({:local, {:variable, name}, expression}, variables, locals) do
     {variables, locals} = collect_variables(expression, variables, locals)
-    {variables, MapSet.put(locals, name)}
+    {variables, Map.put(locals, name, true)}
   end
 
   defp collect_variables({:input, expression}, variables, locals) do
@@ -195,7 +195,7 @@ defmodule Mix.Tasks.I18n.Check do
   defp collect_variables({:match, selectors, variants}, variables, locals) do
     variables =
       Enum.reduce(selectors, variables, fn
-        {:variable, name}, vars -> MapSet.put(vars, name)
+        {:variable, name}, vars -> Map.put(vars, name, true)
         _other, vars -> vars
       end)
 
@@ -242,7 +242,7 @@ defmodule Mix.Tasks.I18n.Check do
     {variables, locals}
   end
 
-  defp collect_operand_variables(variables, {:variable, name}), do: MapSet.put(variables, name)
+  defp collect_operand_variables(variables, {:variable, name}), do: Map.put(variables, name, true)
   defp collect_operand_variables(variables, _operand), do: variables
 
   defp collect_function_variables(variables, {:function, _name, options}) do
@@ -253,14 +253,14 @@ defmodule Mix.Tasks.I18n.Check do
 
   defp collect_option_variables(variables, options) do
     Enum.reduce(options, variables, fn
-      {:option, _key, {:variable, name}}, vars -> MapSet.put(vars, name)
+      {:option, _key, {:variable, name}}, vars -> Map.put(vars, name, true)
       _other, vars -> vars
     end)
   end
 
   defp collect_attributes_variables(variables, attributes) do
     Enum.reduce(attributes, variables, fn
-      {:attribute, _key, {:variable, name}}, vars -> MapSet.put(vars, name)
+      {:attribute, _key, {:variable, name}}, vars -> Map.put(vars, name, true)
       _other, vars -> vars
     end)
   end
