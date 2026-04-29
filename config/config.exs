@@ -14,6 +14,8 @@ config :bullx,
   ecto_repos: [BullX.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :req_llm, load_dotenv: false
+
 # Configure the endpoint
 config :bullx, BullXWeb.Endpoint,
   url: [host: "localhost"],

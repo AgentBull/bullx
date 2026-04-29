@@ -82,7 +82,7 @@ defmodule FeishuOpenAPI.Event do
 
   @doc """
   Verify an already-decoded envelope. Used by transports that receive a
-  parsed map (e.g. the WS frame handler), skipping body-level crypto.
+  parsed map, skipping body-level crypto.
 
   Still runs verification_token check, then returns either a challenge or
   a normalized `%Event{}`.
@@ -93,13 +93,20 @@ defmodule FeishuOpenAPI.Event do
     cfg = normalize_config(config)
 
     with :ok <- verify_token(cfg, decoded) do
-      if Envelope.challenge?(decoded) do
-        {:challenge, Envelope.challenge(decoded)}
-      else
-        {:ok, from_envelope(decoded)}
-      end
+      decoded_result(decoded)
     end
   end
+
+  @doc """
+  Verify a decoded envelope from an already-authenticated transport.
+
+  Long-connection WebSocket event push authenticates when the connection is
+  established. Subsequent event frames do not need the webhook Verification
+  Token check.
+  """
+  @spec verify_trusted_decoded(verify_config() | struct(), map()) ::
+          {:ok, t()} | {:challenge, String.t()} | {:error, term()}
+  def verify_trusted_decoded(_config, decoded) when is_map(decoded), do: decoded_result(decoded)
 
   @doc """
   Convert a decoded envelope map into a normalized `%Event{}`.
@@ -198,6 +205,14 @@ defmodule FeishuOpenAPI.Event do
 
   defp verify_token(%{verification_token: vt}, decoded) do
     if Envelope.token(decoded) == vt, do: :ok, else: {:error, :bad_verification_token}
+  end
+
+  defp decoded_result(decoded) do
+    if Envelope.challenge?(decoded) do
+      {:challenge, Envelope.challenge(decoded)}
+    else
+      {:ok, from_envelope(decoded)}
+    end
   end
 
   defp check_timestamp_skew(ts_binary, max_skew_seconds) do

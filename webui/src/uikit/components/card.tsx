@@ -12,7 +12,7 @@ function Card({
       data-slot="card"
       data-size={size}
       className={cn(
-        "group/card flex min-h-16 min-w-32 flex-col gap-8 overflow-hidden border border-border bg-card py-8 text-sm leading-5 text-card-foreground outline-2 outline-offset-[-2px] outline-transparent has-[>img:first-child]:pt-0 focus-within:outline-ring data-[size=sm]:gap-5 data-[size=sm]:py-5 *:[img:first-child]:rounded-none *:[img:last-child]:rounded-none",
+        "group/card flex min-h-16 min-w-32 flex-col gap-8 overflow-hidden border border-border bg-card py-8 text-sm leading-5 text-card-foreground outline-2 -outline-offset-2 outline-transparent has-[>img:first-child]:pt-0 focus-within:outline-ring data-[size=sm]:gap-5 data-[size=sm]:py-5 *:[img:first-child]:rounded-none *:[img:last-child]:rounded-none",
         className
       )}
       {...props}
@@ -50,7 +50,7 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-description"
-      className={cn("text-sm leading-relaxed text-muted-foreground", className)}
+      className={cn("text-sm leading-relaxed text-muted-foreground mt-2", className)}
       {...props}
     />
   )

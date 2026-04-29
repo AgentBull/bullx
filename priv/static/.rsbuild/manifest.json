@@ -1,0 +1,110 @@
+{
+  "allFiles": [
+    "js/vendors-node_modules_clsx_dist_clsx_mjs-node_modules_tailwind-merge_dist_bundle-mjs_mjs.js",
+    "js/webui_src_apps_control-panel_App_jsx.js",
+    "js/vendors-node_modules_base-ui_react_esm_select_group-label_SelectGroupLabel_js-node_modules_ba-596b84.js",
+    "js/webui_src_apps_setup_App_jsx.js",
+    "js/vendors-node_modules_json-edit-react_build_index_esm_js.js",
+    "js/webui_src_apps_setup_sessions_New_jsx.js",
+    "js/webui_src_uikit_components_badge_tsx-webui_src_uikit_components_collapsible_tsx-webui_src_uik-1d9cbd.js",
+    "css/app.css",
+    "js/app.js",
+    "js/vendors-node_modules_base-ui_react_esm_button_Button_js-node_modules_class-variance-authority-fe0483.js",
+    "js/webui_src_apps_sessions_New_jsx.js",
+    "js/vendors-node_modules_base-ui_react_esm_collapsible_panel_CollapsiblePanel_js-node_modules_bas-8dadef.js",
+    "js/webui_src_apps_setup_Layout_jsx.js",
+    "js/webui_src_apps_setup_Layout_jsx-webui_src_uikit_components_button_tsx-webui_src_uikit_compone-b59c47.js",
+    "js/lib-react.js",
+    "js/node_modules_axios_index_js_lazy-compilation-proxy.js",
+    "js/vendors-node_modules_remixicon_react_index_mjs.js",
+    "js/webui_src_apps_setup_ActivateOwner_jsx.js",
+    "js/vendors-node_modules_rsbuild_core_dist_client_overlay_js-node_modules_inertiajs_react_dist_in-e4c846.js",
+    "js/webui_src_apps_setup_llm_App_jsx.js",
+    "js/webui_src_uikit_components_select_tsx.js",
+    "assets/IBMPlexSansCN.variable.d5d1b830f8.woff2",
+    "assets/marjan-taghipour-0fof1Z4CwQo-unsplash.17843061a0.jpg",
+    "assets/IBMPlexMonoCN.variable.0e7a7f3d51.woff2",
+    "js/vendors-node_modules_clsx_dist_clsx_mjs-node_modules_tailwind-merge_dist_bundle-mjs_mjs.js.map",
+    "js/webui_src_apps_control-panel_App_jsx.js.map",
+    "js/vendors-node_modules_base-ui_react_esm_select_group-label_SelectGroupLabel_js-node_modules_ba-596b84.js.map",
+    "js/webui_src_apps_setup_App_jsx.js.map",
+    "js/vendors-node_modules_json-edit-react_build_index_esm_js.js.map",
+    "js/webui_src_apps_setup_sessions_New_jsx.js.map",
+    "js/webui_src_uikit_components_badge_tsx-webui_src_uikit_components_collapsible_tsx-webui_src_uik-1d9cbd.js.map",
+    "js/app.js.map",
+    "js/vendors-node_modules_base-ui_react_esm_button_Button_js-node_modules_class-variance-authority-fe0483.js.map",
+    "js/webui_src_apps_sessions_New_jsx.js.map",
+    "js/vendors-node_modules_base-ui_react_esm_collapsible_panel_CollapsiblePanel_js-node_modules_bas-8dadef.js.map",
+    "js/webui_src_apps_setup_Layout_jsx.js.map",
+    "js/webui_src_apps_setup_Layout_jsx-webui_src_uikit_components_button_tsx-webui_src_uikit_compone-b59c47.js.map",
+    "js/lib-react.js.map",
+    "js/node_modules_axios_index_js_lazy-compilation-proxy.js.map",
+    "js/vendors-node_modules_remixicon_react_index_mjs.js.map",
+    "js/webui_src_apps_setup_ActivateOwner_jsx.js.map",
+    "js/vendors-node_modules_rsbuild_core_dist_client_overlay_js-node_modules_inertiajs_react_dist_in-e4c846.js.map",
+    "js/webui_src_apps_setup_llm_App_jsx.js.map",
+    "js/webui_src_uikit_components_select_tsx.js.map"
+  ],
+  "entries": {
+    "app": {
+      "assets": [
+        "js/webui_src_uikit_components_select_tsx.js.map",
+        "js/webui_src_apps_setup_llm_App_jsx.js.map",
+        "js/vendors-node_modules_rsbuild_core_dist_client_overlay_js-node_modules_inertiajs_react_dist_in-e4c846.js.map",
+        "js/webui_src_apps_setup_ActivateOwner_jsx.js.map",
+        "js/vendors-node_modules_remixicon_react_index_mjs.js.map",
+        "js/node_modules_axios_index_js_lazy-compilation-proxy.js.map",
+        "js/lib-react.js.map",
+        "js/webui_src_apps_setup_Layout_jsx-webui_src_uikit_components_button_tsx-webui_src_uikit_compone-b59c47.js.map",
+        "assets/marjan-taghipour-0fof1Z4CwQo-unsplash.17843061a0.jpg",
+        "js/webui_src_apps_setup_Layout_jsx.js.map",
+        "js/vendors-node_modules_base-ui_react_esm_collapsible_panel_CollapsiblePanel_js-node_modules_bas-8dadef.js.map",
+        "js/webui_src_apps_sessions_New_jsx.js.map",
+        "js/vendors-node_modules_base-ui_react_esm_button_Button_js-node_modules_class-variance-authority-fe0483.js.map",
+        "assets/IBMPlexMonoCN.variable.0e7a7f3d51.woff2",
+        "assets/IBMPlexSansCN.variable.d5d1b830f8.woff2",
+        "js/app.js.map",
+        "js/webui_src_uikit_components_badge_tsx-webui_src_uikit_components_collapsible_tsx-webui_src_uik-1d9cbd.js.map",
+        "js/webui_src_apps_setup_sessions_New_jsx.js.map",
+        "js/vendors-node_modules_json-edit-react_build_index_esm_js.js.map",
+        "js/webui_src_apps_setup_App_jsx.js.map",
+        "js/vendors-node_modules_base-ui_react_esm_select_group-label_SelectGroupLabel_js-node_modules_ba-596b84.js.map",
+        "js/webui_src_apps_control-panel_App_jsx.js.map",
+        "js/vendors-node_modules_clsx_dist_clsx_mjs-node_modules_tailwind-merge_dist_bundle-mjs_mjs.js.map"
+      ],
+      "initial": {
+        "js": [
+          "js/lib-react.js",
+          "js/vendors-node_modules_rsbuild_core_dist_client_overlay_js-node_modules_inertiajs_react_dist_in-e4c846.js",
+          "js/app.js"
+        ],
+        "css": [
+          "css/app.css"
+        ]
+      },
+      "async": {
+        "js": [
+          "js/webui_src_uikit_components_select_tsx.js",
+          "js/webui_src_apps_setup_llm_App_jsx.js",
+          "js/webui_src_apps_setup_ActivateOwner_jsx.js",
+          "js/vendors-node_modules_remixicon_react_index_mjs.js",
+          "js/node_modules_axios_index_js_lazy-compilation-proxy.js",
+          "js/lib-react.js",
+          "js/webui_src_apps_setup_Layout_jsx-webui_src_uikit_components_button_tsx-webui_src_uikit_compone-b59c47.js",
+          "js/webui_src_apps_setup_Layout_jsx.js",
+          "js/vendors-node_modules_base-ui_react_esm_collapsible_panel_CollapsiblePanel_js-node_modules_bas-8dadef.js",
+          "js/webui_src_apps_sessions_New_jsx.js",
+          "js/vendors-node_modules_base-ui_react_esm_button_Button_js-node_modules_class-variance-authority-fe0483.js",
+          "js/webui_src_uikit_components_badge_tsx-webui_src_uikit_components_collapsible_tsx-webui_src_uik-1d9cbd.js",
+          "js/webui_src_apps_setup_sessions_New_jsx.js",
+          "js/vendors-node_modules_json-edit-react_build_index_esm_js.js",
+          "js/webui_src_apps_setup_App_jsx.js",
+          "js/vendors-node_modules_base-ui_react_esm_select_group-label_SelectGroupLabel_js-node_modules_ba-596b84.js",
+          "js/webui_src_apps_control-panel_App_jsx.js",
+          "js/vendors-node_modules_clsx_dist_clsx_mjs-node_modules_tailwind-merge_dist_bundle-mjs_mjs.js"
+        ]
+      }
+    }
+  },
+  "integrity": {}
+}

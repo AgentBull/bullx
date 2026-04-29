@@ -26,7 +26,7 @@ defmodule BullXFeishu.ConfigTest do
              Config.normalize({:feishu, "default"}, %{
                app_id: {:system, "BULLX_TEST_FEISHU_APP_ID"},
                app_secret: {:system, "BULLX_TEST_FEISHU_APP_SECRET"},
-               connection_mode: :webhook,
+               domain: "lark",
                dedupe_ttl_ms: 123,
                sso: %{
                  enabled: true,
@@ -37,7 +37,7 @@ defmodule BullXFeishu.ConfigTest do
     assert config.channel == {:feishu, "default"}
     assert config.app_id == "cli_test"
     assert config.app_secret == "secret_test"
-    assert config.connection_mode == :webhook
+    assert config.domain == :lark
     assert config.dedupe_ttl_ms == 123
     assert config.sso.redirect_uri == "https://bullx.test/sessions/feishu/callback"
   end
@@ -46,15 +46,22 @@ defmodule BullXFeishu.ConfigTest do
     {:ok, config} =
       Config.normalize({:feishu, "default"}, %{
         app_id: "cli_test",
-        app_secret: "secret_test",
-        verification_token: "verify",
-        encrypt_key: "encrypt"
+        app_secret: "secret_test"
       })
 
     redacted = Config.redacted(config)
 
     refute Map.has_key?(redacted, :app_secret)
-    assert redacted.verification_token == "[REDACTED]"
-    assert redacted.encrypt_key == "[REDACTED]"
+    refute Map.has_key?(redacted, :verification_token)
+    refute Map.has_key?(redacted, :encrypt_key)
+  end
+
+  test "rejects unsupported domains" do
+    assert {:error, %{"details" => %{"field" => "domain"}}} =
+             Config.normalize({:feishu, "default"}, %{
+               app_id: "cli_test",
+               app_secret: "secret_test",
+               domain: "https://example.test"
+             })
   end
 end

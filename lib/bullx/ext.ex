@@ -53,6 +53,26 @@ defmodule BullX.Ext do
   def generate_key, do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  XChaCha20-Poly1305-IETF authenticated encryption.
+
+  `key` is a 64-character hex string (32 bytes). The output is
+  `"<base64url(nonce)>.<base64url(ciphertext)>"` with no padding and is
+  safe to store as a single column. A fresh 24-byte nonce is generated per
+  call; the ciphertext half includes the AEAD tag.
+  """
+  @spec aead_encrypt(binary(), String.t()) :: result(String.t())
+  def aead_encrypt(_plaintext, _key), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Inverse of `aead_encrypt/2`. Returns the original plaintext as a binary.
+
+  A malformed ciphertext, wrong key, or failed authentication yields
+  `{:error, reason}`.
+  """
+  @spec aead_decrypt(String.t(), String.t()) :: result(binary())
+  def aead_decrypt(_ciphertext, _key), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Argon2id PHC string with OWASP default parameters and a 16-byte
   per-call OS-RNG salt.
 

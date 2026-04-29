@@ -8,7 +8,7 @@ defmodule BullXAIAgent.Plugins.Retrieval do
 
   Provides in-process memory operations (`retrieval.upsert`,
   `retrieval.recall`, `retrieval.clear`) plus optional prompt enrichment for
-  `chat.message` and `reasoning.*.run` signals.
+  `chat.message` signals.
 
   ## Enrichment Lifecycle
 
@@ -193,8 +193,7 @@ defmodule BullXAIAgent.Plugins.Retrieval do
   end
 
   defp enrichable_signal?(type) when is_binary(type) do
-    type in @enrichable_signals or
-      (String.starts_with?(type, "reasoning.") and String.ends_with?(type, ".run"))
+    type in @enrichable_signals
   end
 
   defp enrichable_signal?(_), do: false

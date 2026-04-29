@@ -18,7 +18,9 @@ defmodule FeishuOpenAPI.WS.Client do
       120s, overridable by the server via a `pong` payload).
     * Re-assembles fragmented messages (headers `sum > 1`, `seq`, `message_id`)
       with a 5-second window.
-    * Dispatches `event` and `card` messages to the dispatcher.
+    * Dispatches `event` and `card` messages to the dispatcher as trusted
+      decoded payloads. Webhook token/signature verification does not apply to
+      long-connection frames.
     * Server error codes `514`, `403`, `1000040350` are treated as fatal
       (client misconfiguration); everything else triggers a backoff-based
       reconnect when `:auto_reconnect` is `true`.
@@ -28,7 +30,7 @@ defmodule FeishuOpenAPI.WS.Client do
 
   require Logger
 
-  alias FeishuOpenAPI.{Client, WS.Frame, WS.Protocol, Event.Dispatcher}
+  alias FeishuOpenAPI.{Client, Event.Envelope, WS.Frame, WS.Protocol, Event.Dispatcher}
 
   @default_ping_interval_s 120
   @default_reconnect_interval_s 120
@@ -94,6 +96,10 @@ defmodule FeishuOpenAPI.WS.Client do
   @spec reconnect(GenServer.server()) :: :ok
   def reconnect(server), do: GenServer.cast(server, :reconnect)
 
+  @doc "Return the current WebSocket lifecycle status."
+  @spec status(GenServer.server()) :: atom()
+  def status(server), do: GenServer.call(server, :status)
+
   @doc "Stop the server gracefully."
   def stop(server), do: GenServer.stop(server)
 
@@ -117,7 +123,13 @@ defmodule FeishuOpenAPI.WS.Client do
   end
 
   @impl true
+  def handle_call(:status, _from, state) do
+    {:reply, state.status, state}
+  end
+
+  @impl true
   def handle_cast(:reconnect, state) do
+    Logger.info("feishu_openapi ws reconnect requested app_id=#{state.client.app_id}")
     state = state |> clear_reconnect_timer() |> drop_conn()
     send(self(), :connect)
     {:noreply, state}
@@ -155,6 +167,7 @@ defmodule FeishuOpenAPI.WS.Client do
   end
 
   def handle_info(:reconnect, state) do
+    Logger.info("feishu_openapi ws reconnecting app_id=#{state.client.app_id}")
     state = clear_reconnect_timer(state)
     send(self(), :connect)
     {:noreply, state}
@@ -175,6 +188,7 @@ defmodule FeishuOpenAPI.WS.Client do
         Process.demonitor(ref, [:flush])
         duration_ms = System.monotonic_time(:millisecond) - start_ms
         state = %{state | dispatch_tasks: rest}
+        log_dispatch_result(frame, result, duration_ms, state)
         {:noreply, send_dispatch_response(frame, result, duration_ms, state)}
     end
   end
@@ -265,6 +279,10 @@ defmodule FeishuOpenAPI.WS.Client do
          ) do
       {:ok, %{"data" => data}} when is_map(data) ->
         with {:ok, url} <- endpoint_url(data) do
+          Logger.info(
+            "feishu_openapi ws endpoint discovered app_id=#{client.app_id} endpoint_host=#{endpoint_host(url)}"
+          )
+
           {:ok, url, endpoint_client_config(data)}
         end
 
@@ -279,6 +297,13 @@ defmodule FeishuOpenAPI.WS.Client do
   defp endpoint_url(%{"URL" => url}) when is_binary(url), do: {:ok, url}
   defp endpoint_url(%{"url" => url}) when is_binary(url), do: {:ok, url}
   defp endpoint_url(data), do: {:error, {:unexpected_endpoint_shape, %{"data" => data}}}
+
+  defp endpoint_host(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{host: host} when is_binary(host) -> host
+      _other -> "unknown"
+    end
+  end
 
   defp endpoint_client_config(data) when is_map(data) do
     Map.get(data, "ClientConfig") || Map.get(data, "client_config") || %{}
@@ -338,6 +363,7 @@ defmodule FeishuOpenAPI.WS.Client do
            upgrade_headers
          ) do
       {:ok, conn, websocket} ->
+        Logger.info("feishu_openapi ws connected app_id=#{state.client.app_id}")
         state = %{state | conn: conn, websocket: websocket, status: :connected}
         handle_responses(rest, state)
 
@@ -346,6 +372,8 @@ defmodule FeishuOpenAPI.WS.Client do
 
         case Protocol.classify_handshake(upgrade_status, upgrade_headers, reason) do
           {:fatal, reason} ->
+            Logger.error("feishu_openapi ws handshake failed: #{inspect(reason)} fatal?=true")
+
             {:stop, {:shutdown, reason}, state}
 
           {:retry, reason} ->
@@ -382,6 +410,10 @@ defmodule FeishuOpenAPI.WS.Client do
   end
 
   defp handle_ws_frame({:close, code, reason}, state) do
+    Logger.warning(
+      "feishu_openapi ws closed by peer app_id=#{state.client.app_id} close_code=#{inspect(code)} close_reason=#{inspect(reason)}"
+    )
+
     state
     |> drop_conn()
     |> schedule_reconnect_async({:close, code, reason})
@@ -398,17 +430,27 @@ defmodule FeishuOpenAPI.WS.Client do
 
   defp do_route(frame, state) do
     case Frame.type(frame) do
-      "event" -> dispatch_event(frame, state)
-      "card" -> dispatch_event(frame, state)
-      "pong" -> apply_pong_config(frame, state)
-      "ping" -> handle_send_result(send_pong_for(frame, state), state, "pong")
-      _ -> state
+      "event" ->
+        dispatch_event(frame, state)
+
+      "card" ->
+        dispatch_event(frame, state)
+
+      "pong" ->
+        apply_pong_config(frame, state)
+
+      "ping" ->
+        handle_send_result(send_pong_for(frame, state), state, "pong")
+
+      _ ->
+        state
     end
   end
 
   defp dispatch_event(%Frame{payload: payload} = frame, state) do
     case Jason.decode(payload) do
       {:ok, decoded} ->
+        log_frame_received(frame, decoded, state)
         start_task_for(frame, decoded, state)
 
       {:error, reason} ->
@@ -417,12 +459,24 @@ defmodule FeishuOpenAPI.WS.Client do
     end
   end
 
+  defp log_frame_received(%Frame{} = frame, decoded, state) do
+    Logger.info(
+      "feishu_openapi ws frame received app_id=#{state.client.app_id} frame_type=#{frame_type(frame)} event_type=#{event_type(decoded)}"
+    )
+  end
+
+  defp log_dispatch_result(%Frame{} = frame, result, duration_ms, state) do
+    Logger.info(
+      "feishu_openapi ws dispatch result app_id=#{state.client.app_id} frame_type=#{frame_type(frame)} event_type=#{event_type(frame)} result=#{dispatch_result(result)} duration_ms=#{duration_ms}"
+    )
+  end
+
   defp start_task_for(%Frame{} = frame, decoded, %{dispatcher: dispatcher} = state) do
     start_ms = System.monotonic_time(:millisecond)
 
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        Dispatcher.dispatch(dispatcher, {:decoded, decoded})
+        Dispatcher.dispatch(dispatcher, {:trusted_decoded, decoded})
       end)
 
     %{
@@ -464,6 +518,36 @@ defmodule FeishuOpenAPI.WS.Client do
         state
     end
   end
+
+  defp frame_type(%Frame{} = frame), do: Frame.type(frame) || "unknown"
+
+  defp event_type(%Frame{payload: payload}) do
+    case Jason.decode(payload) do
+      {:ok, decoded} -> event_type(decoded)
+      {:error, _reason} -> "unknown"
+    end
+  end
+
+  defp event_type(decoded) when is_map(decoded) do
+    Envelope.event_type(decoded) ||
+      string_field(decoded, "type") ||
+      string_field(decoded, "event_type") ||
+      "unknown"
+  end
+
+  defp string_field(map, key) do
+    case Map.get(map, key) do
+      value when is_binary(value) -> value
+      _other -> nil
+    end
+  end
+
+  defp dispatch_result({:ok, :no_handler}), do: "no_handler"
+  defp dispatch_result({:ok, :unknown_event}), do: "unknown_event"
+  defp dispatch_result({:ok, _result}), do: "handled"
+  defp dispatch_result({:challenge, _challenge}), do: "challenge"
+  defp dispatch_result({:error, reason}), do: "error:#{inspect(reason)}"
+  defp dispatch_result(other), do: inspect(other)
 
   # Fragmentation ------------------------------------------------------
 
@@ -584,6 +668,10 @@ defmodule FeishuOpenAPI.WS.Client do
           else
             :timer.seconds(max(state.reconnect_interval_s, 0))
           end
+
+        Logger.warning(
+          "feishu_openapi ws reconnect scheduled app_id=#{state.client.app_id} reason=#{inspect(reason)} delay_ms=#{delay} reconnect_attempt=#{state.reconnect_attempt + 1}"
+        )
 
         ref = Process.send_after(self(), :reconnect, delay)
 

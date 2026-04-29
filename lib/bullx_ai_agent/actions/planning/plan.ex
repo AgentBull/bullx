@@ -7,7 +7,7 @@ defmodule BullXAIAgent.Actions.Planning.Plan do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:planning`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:heavy`) or direct spec
   * `goal` (required) - The goal to achieve
   * `constraints` (optional) - List of constraints/limitations
   * `resources` (optional) - List of available resources
@@ -41,7 +41,7 @@ defmodule BullXAIAgent.Actions.Planning.Plan do
     schema:
       Zoi.object(%{
         model:
-          Zoi.any(description: "Model alias (e.g., :planning) or direct model spec string")
+          Zoi.any(description: "Model alias (e.g., :heavy) or direct model spec string")
           |> Zoi.optional(),
         goal: Zoi.string(description: "The goal to achieve"),
         constraints:
@@ -121,16 +121,16 @@ defmodule BullXAIAgent.Actions.Planning.Plan do
     with {:ok, model} <- resolve_model(params[:model]),
          {:ok, req_context} <- build_plan_messages(params),
          opts = build_opts(params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       {:ok, format_result(response, model, params[:goal])}
     end
   end
 
   # Private Functions
 
-  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:planning)}
+  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:heavy)}
   defp resolve_model(model) when is_atom(model), do: {:ok, BullXAIAgent.resolve_model(model)}
-  defp resolve_model(model) when is_binary(model), do: {:ok, model}
+  defp resolve_model(_model), do: {:error, :invalid_model_format}
 
   defp build_plan_messages(params) do
     user_prompt = build_plan_user_prompt(params)
@@ -270,9 +270,9 @@ defmodule BullXAIAgent.Actions.Planning.Plan do
 
   defp plugin_default(context, key) do
     first_present([
-      get_in(context, [:plugin_state, :planning, key]),
-      get_in(context, [:state, :planning, key]),
-      get_in(context, [:agent, :state, :planning, key])
+      get_in(context, [:plugin_state, :planner, key]),
+      get_in(context, [:state, :planner, key]),
+      get_in(context, [:agent, :state, :planner, key])
     ])
   end
 

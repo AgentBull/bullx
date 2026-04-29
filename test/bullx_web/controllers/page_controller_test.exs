@@ -1,12 +1,26 @@
 defmodule BullXWeb.PageControllerTest do
-  use BullXWeb.ConnCase
+  use BullXWeb.ConnCase, async: false
 
+  alias BullXAccounts.ActivationCode
   alias BullXAccounts.User
 
-  test "GET / redirects to setup when no user exists", %{conn: conn} do
+  test "GET / redirects to setup when users is empty and a bootstrap code is pending",
+       %{conn: conn} do
+    Repo.delete_all(ActivationCode)
+    {:ok, _result} = BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
     conn = get(conn, ~p"/")
 
     assert redirected_to(conn) == ~p"/setup"
+  end
+
+  test "GET / falls through to /sessions/new when users is empty but no bootstrap code is pending",
+       %{conn: conn} do
+    Repo.delete_all(ActivationCode)
+
+    conn = get(conn, ~p"/")
+
+    assert redirected_to(conn) == ~p"/sessions/new"
   end
 
   test "GET / redirects to sign-in when setup is complete and no user is signed in", %{conn: conn} do

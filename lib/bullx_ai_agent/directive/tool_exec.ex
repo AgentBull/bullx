@@ -52,7 +52,8 @@ defmodule BullXAIAgent.Directive.ToolExec do
                 Zoi.integer(description: "Fixed retry backoff in milliseconds")
                 |> Zoi.default(0),
               request_id: Zoi.string(description: "Request correlation ID") |> Zoi.optional(),
-              iteration: Zoi.integer(description: "Current ReAct iteration") |> Zoi.optional(),
+              iteration:
+                Zoi.integer(description: "Current AgenticLoop iteration") |> Zoi.optional(),
               metadata:
                 Zoi.map(description: "Arbitrary metadata for tracking") |> Zoi.default(%{})
             },
@@ -502,7 +503,7 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.ToolExec do
   end
 
   defp get_tools_from_state(state) when is_map(state) do
-    # Check for tools in strategy config first (ReAct pattern)
+    # Check for tools in strategy config first (AgenticLoop pattern)
     case get_in(state, [:__strategy__, :config, :actions_by_name]) do
       tools when is_map(tools) and map_size(tools) > 0 ->
         tools

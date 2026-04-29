@@ -4,7 +4,8 @@ defmodule BullXFeishu.Config do
 
   The Gateway registry stores adapter specs as user-provided maps. This module
   resolves BullX's `{:system, "ENV"}` indirection, applies Feishu defaults, and
-  builds the SDK client without logging secrets.
+  builds the SDK client without logging secrets. BullX exposes only Feishu and
+  Lark domains for self-built apps.
   """
 
   alias FeishuOpenAPI.Client
@@ -22,21 +23,15 @@ defmodule BullXFeishu.Config do
     :channel_id,
     :app_id,
     :app_secret,
-    :verification_token,
-    :encrypt_key,
     :bot_open_id,
     :bot_user_id,
-    :webhook,
     :client,
     domain: :feishu,
-    app_type: :self_built,
-    connection_mode: :websocket,
     dedupe_ttl_ms: @default_dedupe_ttl_ms,
     message_context_ttl_ms: @default_message_context_ttl_ms,
     card_action_dedupe_ttl_ms: @default_card_action_dedupe_ttl_ms,
     inline_media_max_bytes: @default_inline_media_max_bytes,
     stream_update_interval_ms: @default_stream_update_interval_ms,
-    status_reactions: %{enabled: true, in_progress: "Typing", failure: "CrossMark"},
     sso: %{enabled: false, scopes: ["openid", "profile", "email", "phone"]},
     req_options: [],
     headers: [],
@@ -51,7 +46,13 @@ defmodule BullXFeishu.Config do
 
   @spec normalize(BullXGateway.Delivery.channel(), map() | t()) :: {:ok, t()} | {:error, map()}
   def normalize(channel, %__MODULE__{} = config) do
-    {:ok, %{config | channel: channel, channel_id: elem(channel, 1)}}
+    %{
+      config
+      | channel: channel,
+        channel_id: elem(channel, 1),
+        domain: normalize_domain(config.domain)
+    }
+    |> validate()
   end
 
   def normalize({:feishu, channel_id} = channel, config)
@@ -63,11 +64,7 @@ defmodule BullXFeishu.Config do
       channel_id: channel_id,
       app_id: present_string(Map.get(resolved, :app_id)),
       app_secret: present_secret(Map.get(resolved, :app_secret)),
-      domain: Map.get(resolved, :domain, :feishu),
-      app_type: Map.get(resolved, :app_type, :self_built),
-      connection_mode: Map.get(resolved, :connection_mode, :websocket),
-      verification_token: present_string(Map.get(resolved, :verification_token)),
-      encrypt_key: present_string(Map.get(resolved, :encrypt_key)),
+      domain: normalize_domain(Map.get(resolved, :domain, :feishu)),
       bot_open_id: present_string(Map.get(resolved, :bot_open_id)),
       bot_user_id: present_string(Map.get(resolved, :bot_user_id)),
       dedupe_ttl_ms: non_negative_integer(resolved, :dedupe_ttl_ms, @default_dedupe_ttl_ms),
@@ -87,14 +84,7 @@ defmodule BullXFeishu.Config do
           :stream_update_interval_ms,
           @default_stream_update_interval_ms
         ),
-      status_reactions:
-        Map.get(resolved, :status_reactions, %{
-          enabled: true,
-          in_progress: "Typing",
-          failure: "CrossMark"
-        }),
       sso: normalize_sso(Map.get(resolved, :sso, %{})),
-      webhook: normalize_webhook(Map.get(resolved, :webhook)),
       client: Map.get(resolved, :client),
       req_options: Map.get(resolved, :req_options, []),
       headers: Map.get(resolved, :headers, []),
@@ -126,21 +116,11 @@ defmodule BullXFeishu.Config do
     opts =
       [
         domain: config.domain,
-        app_type: config.app_type,
         req_options: config.req_options,
         headers: config.headers
       ]
-      |> maybe_base_url(config.domain)
 
     Client.new(config.app_id, config.app_secret, opts)
-  end
-
-  @spec verification_opts(t()) :: keyword()
-  def verification_opts(%__MODULE__{} = config) do
-    [
-      verification_token: config.verification_token,
-      encrypt_key: config.encrypt_key
-    ]
   end
 
   @spec sso_enabled?(t()) :: boolean()
@@ -151,8 +131,6 @@ defmodule BullXFeishu.Config do
     config
     |> Map.from_struct()
     |> Map.drop([:app_secret, :client])
-    |> Map.update(:verification_token, nil, &redact_secret/1)
-    |> Map.update(:encrypt_key, nil, &redact_secret/1)
   end
 
   def redacted(config) when is_map(config), do: config |> resolve() |> Map.drop([:app_secret])
@@ -165,22 +143,17 @@ defmodule BullXFeishu.Config do
     {:error, payload_error("Feishu app_secret is required", "app_secret")}
   end
 
-  defp validate(%__MODULE__{domain: domain})
-       when domain not in [:feishu, :lark] and not is_binary(domain) do
-    {:error,
-     payload_error("Feishu domain must be :feishu, :lark, or a base URL", inspect(domain))}
+  defp validate(%__MODULE__{} = config) do
+    with :ok <- validate_domain(config.domain) do
+      {:ok, config}
+    end
   end
 
-  defp validate(%__MODULE__{app_type: app_type})
-       when app_type not in [:self_built, :marketplace] do
-    {:error, payload_error("Feishu app_type is invalid", inspect(app_type))}
-  end
+  defp validate_domain(domain) when domain in [:feishu, :lark], do: :ok
 
-  defp validate(%__MODULE__{connection_mode: mode}) when mode not in [:websocket, :webhook] do
-    {:error, payload_error("Feishu connection_mode is invalid", inspect(mode))}
+  defp validate_domain(_domain) do
+    {:error, payload_error("Feishu domain must be :feishu or :lark", "domain")}
   end
-
-  defp validate(%__MODULE__{} = config), do: {:ok, config}
 
   defp normalize_sso(nil), do: %{enabled: false, scopes: ["openid", "profile", "email", "phone"]}
 
@@ -196,23 +169,6 @@ defmodule BullXFeishu.Config do
   end
 
   defp normalize_sso(_), do: %{enabled: false, scopes: ["openid", "profile", "email", "phone"]}
-
-  defp normalize_webhook(nil), do: nil
-
-  defp normalize_webhook(webhook) when is_map(webhook) do
-    webhook = resolve(webhook)
-
-    %{
-      scheme: Map.get(webhook, :scheme, :http),
-      host: Map.get(webhook, :host, "127.0.0.1"),
-      port: Map.get(webhook, :port, 4_005),
-      event_path: Map.get(webhook, :event_path, "/webhooks/feishu/event"),
-      card_action_path: Map.get(webhook, :card_action_path, "/webhooks/feishu/card_action"),
-      max_body_length: Map.get(webhook, :max_body_length, 1_048_576)
-    }
-  end
-
-  defp normalize_webhook(_), do: nil
 
   defp resolve(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {key, resolve_value(value)} end)
@@ -243,20 +199,19 @@ defmodule BullXFeishu.Config do
   defp present_secret(fun) when is_function(fun, 0), do: fun
   defp present_secret(value), do: present_string(value)
 
+  defp normalize_domain(value) when value in [:feishu, :lark], do: value
+  defp normalize_domain("feishu"), do: :feishu
+  defp normalize_domain("lark"), do: :lark
+  defp normalize_domain(value) when is_binary(value), do: String.trim(value)
+
+  defp normalize_domain(value), do: value
+
   defp non_negative_integer(map, key, default) do
     case Map.get(map, key, default) do
       value when is_integer(value) and value >= 0 -> value
       _ -> default
     end
   end
-
-  defp maybe_base_url(opts, domain) when is_binary(domain),
-    do: Keyword.put(opts, :base_url, domain)
-
-  defp maybe_base_url(opts, _domain), do: opts
-
-  defp redact_secret(nil), do: nil
-  defp redact_secret(_), do: "[REDACTED]"
 
   defp payload_error(message, field) do
     %{"kind" => "payload", "message" => message, "details" => %{"field" => field}}

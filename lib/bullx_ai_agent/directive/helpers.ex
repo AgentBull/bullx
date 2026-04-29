@@ -64,12 +64,16 @@ defmodule BullXAIAgent.Directive.Helpers do
   @doc """
   Resolves a model from directive fields.
 
-  Supports both direct model specification and model alias resolution.
+  Supports model alias resolution through the LLM provider catalog.
   """
-  @spec resolve_directive_model(map()) :: String.t()
-  def resolve_directive_model(%{model: model}) when is_binary(model) and model != "", do: model
+  @spec resolve_directive_model(map()) :: BullXAIAgent.LLM.ResolvedProvider.t()
 
   def resolve_directive_model(%{model_alias: alias_atom})
+      when is_atom(alias_atom) and not is_nil(alias_atom) do
+    BullXAIAgent.resolve_model(alias_atom)
+  end
+
+  def resolve_directive_model(%{model: alias_atom})
       when is_atom(alias_atom) and not is_nil(alias_atom) do
     BullXAIAgent.resolve_model(alias_atom)
   end

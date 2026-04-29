@@ -9,6 +9,13 @@ defmodule BullX.Runtime.Supervisor do
 
   @impl true
   def init(:ok) do
-    Supervisor.init([], strategy: :one_for_one)
+    children = [
+      BullX.Runtime.Targets.Cache,
+      BullX.Runtime.Targets.SessionRegistry,
+      BullX.Runtime.Targets.SessionSupervisor,
+      BullX.Runtime.Targets.Ingress
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
   end
 end

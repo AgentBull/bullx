@@ -6,9 +6,8 @@ defmodule BullXAccounts.AuthZ.Bootstrap do
   require Logger
 
   alias BullX.Repo
+  alias BullXAccounts.AuthZ
   alias BullXAccounts.UserGroup
-
-  @admin_group_name "admin"
 
   def start_link(_opts), do: Task.start_link(__MODULE__, :run, [])
 
@@ -29,26 +28,15 @@ defmodule BullXAccounts.AuthZ.Bootstrap do
   end
 
   defp ensure_admin_group do
-    case Repo.get_by(UserGroup, name: @admin_group_name) do
-      nil -> create_admin_group()
-      %UserGroup{type: :static, built_in: true} -> :ok
-      group -> log_conflicting_admin_group(group)
-    end
-  end
-
-  defp create_admin_group do
-    attrs = %{
-      name: @admin_group_name,
-      type: :static,
-      description: "Built-in administrators group.",
-      built_in: true
-    }
-
-    case %UserGroup{}
-         |> UserGroup.system_create_changeset(attrs)
-         |> Repo.insert() do
-      {:ok, _group} ->
+    case AuthZ.ensure_built_in_admin_group() do
+      {:ok, _group, :created} ->
         Logger.info("BullXAccounts.AuthZ bootstrap created built-in admin group")
+
+      {:ok, _group, :existing} ->
+        :ok
+
+      {:error, {:conflicting_admin_group, group}} ->
+        log_conflicting_admin_group(group)
 
       {:error, changeset} ->
         Logger.warning(

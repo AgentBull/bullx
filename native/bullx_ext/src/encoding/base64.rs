@@ -17,11 +17,11 @@ pub fn base64_url_safe_decode(input: Term<'_>) -> NifResult<OwnedBinary> {
   url_safe_decode(&input).and_then(binary_from_vec)
 }
 
-fn url_safe_encode(input: &[u8]) -> String {
+pub(crate) fn url_safe_encode(input: &[u8]) -> String {
   URL_SAFE_NO_PAD.encode_to_string(input)
 }
 
-fn url_safe_decode(input: &str) -> NifResult<Vec<u8>> {
+pub(crate) fn url_safe_decode(input: &str) -> NifResult<Vec<u8>> {
   URL_SAFE_NO_PAD
     .decode_to_vec(input)
     .map_err(|decode_error| error(decode_error.to_string()))

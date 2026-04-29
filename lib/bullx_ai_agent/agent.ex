@@ -2,9 +2,9 @@
 
 defmodule BullXAIAgent.Agent do
   @moduledoc """
-  Base macro for BullXAIAgent agents with ReAct strategy implied.
+  Base macro for BullXAIAgent agents with AgenticLoop strategy implied.
 
-  Wraps `use Jido.Agent` with `BullXAIAgent.Reasoning.ReAct.Strategy` wired in,
+  Wraps `use Jido.Agent` with `BullXAIAgent.Reasoning.AgenticLoop.Strategy` wired in,
   plus standard state fields and helper functions.
 
   ## Usage
@@ -38,12 +38,12 @@ defmodule BullXAIAgent.Agent do
     `:stream_receive_timeout_ms` is accepted as a compatibility alias.
   - `:effect_policy` - Agent-level effect policy (default allow-list)
   - `:strategy_effect_policy` - Optional strategy-level narrowing policy (cannot broaden agent policy)
-  - `:runtime_adapter` - Deprecated compatibility flag (delegated ReAct runtime is always enabled)
-  - `:runtime_task_supervisor` - Optional Task.Supervisor used by delegated ReAct runtime
+  - `:runtime_adapter` - Deprecated compatibility flag (delegated AgenticLoop runtime is always enabled)
+  - `:runtime_task_supervisor` - Optional Task.Supervisor used by delegated AgenticLoop runtime
   - `:observability` - Observability options map
   - `:req_http_options` - Base Req HTTP options passed through to ReqLLM calls
-  - `:llm_opts` - Additional ReqLLM generation options merged into ReAct LLM calls
-  - `:request_transformer` - Module implementing per-turn ReAct request shaping
+  - `:llm_opts` - Additional ReqLLM generation options merged into AgenticLoop LLM calls
+  - `:request_transformer` - Module implementing per-turn AgenticLoop request shaping
   - `:tool_context` - Context map passed to all tool executions (e.g., `%{actor: user, domain: MyDomain}`).
     Must be literal data only — module aliases, atoms, strings, numbers, lists, and maps are permitted.
     Function calls, module attributes (`@attr`), and pinned variables (`^var`) raise `CompileError`.
@@ -115,7 +115,7 @@ defmodule BullXAIAgent.Agent do
       {:ok, request} = MyApp.WeatherAgent.ask(pid, "Get my preferences",
         tool_context: %{actor: current_user, tenant_id: "acme"})
 
-  ReAct and ToT tool execution contexts include a runtime-managed snapshot at `:state`
+  AgenticLoop tool execution contexts include a runtime-managed snapshot at `:state`
   (canonical, core-aligned). This key is reserved and overrides same-named values
   from `tool_context`.
   """
@@ -306,7 +306,7 @@ defmodule BullXAIAgent.Agent do
     stream_timeout_ms =
       Keyword.get(opts, :stream_timeout_ms, Keyword.get(opts, :stream_receive_timeout_ms, 0))
 
-    # ReAct delegation is always enabled; keep runtime_adapter option for compatibility only.
+    # AgenticLoop delegation is always enabled; keep runtime_adapter option for compatibility only.
     _runtime_adapter_opt = Keyword.get(opts, :runtime_adapter, true)
     runtime_adapter = true
     runtime_task_supervisor = Keyword.get(opts, :runtime_task_supervisor)
@@ -447,7 +447,7 @@ defmodule BullXAIAgent.Agent do
         tags: unquote(tags),
         plugins: unquote(ai_plugins) ++ unquote(plugins),
         default_plugins: unquote(Macro.escape(default_plugins)),
-        strategy: {BullXAIAgent.Reasoning.ReAct.Strategy, unquote(strategy_opts_ast)},
+        strategy: {BullXAIAgent.Reasoning.AgenticLoop.Strategy, unquote(strategy_opts_ast)},
         schema: unquote(base_schema_ast)
 
       unquote(__MODULE__.compatibility_overrides_ast())
@@ -468,11 +468,11 @@ defmodule BullXAIAgent.Agent do
       - `:tool_context` - Additional context map merged with agent's tool_context
       - `:tools` - Request-scoped tool registry override for this run only
       - `:allowed_tools` - Request-scoped allowlist of tool names
-      - `:request_transformer` - Module implementing per-turn ReAct request shaping
+      - `:request_transformer` - Module implementing per-turn AgenticLoop request shaping
       - `:stream_timeout_ms` - Request-scoped runtime inactivity timeout.
         `:stream_receive_timeout_ms` is accepted as a compatibility alias.
-      - `:req_http_options` - Per-request Req HTTP options forwarded to ReAct runtime
-      - `:llm_opts` - Per-request ReqLLM generation options forwarded to ReAct runtime
+      - `:req_http_options` - Per-request Req HTTP options forwarded to AgenticLoop runtime
+      - `:llm_opts` - Per-request ReqLLM generation options forwarded to AgenticLoop runtime
       - `:stream_to` - Optional request-scoped runtime event sink, currently `{:pid, pid}`
       - `:timeout` - Timeout for the underlying cast (default: no timeout)
 
@@ -489,8 +489,8 @@ defmodule BullXAIAgent.Agent do
           pid,
           query,
           Keyword.merge(opts,
-            signal_type: "ai.react.query",
-            source: "/ai/react/agent"
+            signal_type: "ai.agentic_loop.query",
+            source: "/ai/agentic_loop/agent"
           )
         )
       end
@@ -498,7 +498,7 @@ defmodule BullXAIAgent.Agent do
       @doc """
       Send a query and return both its request handle and runtime event stream.
 
-      The returned enumerable yields canonical ReAct runtime events until the
+      The returned enumerable yields canonical AgenticLoop runtime events until the
       request emits `:request_completed`, `:request_failed`, or
       `:request_cancelled`.
 
@@ -562,11 +562,11 @@ defmodule BullXAIAgent.Agent do
       - `:tool_context` - Additional context map merged with agent's tool_context
       - `:tools` - Request-scoped tool registry override for this run only
       - `:allowed_tools` - Request-scoped allowlist of tool names
-      - `:request_transformer` - Module implementing per-turn ReAct request shaping
+      - `:request_transformer` - Module implementing per-turn AgenticLoop request shaping
       - `:stream_timeout_ms` - Request-scoped runtime inactivity timeout.
         `:stream_receive_timeout_ms` is accepted as a compatibility alias.
-      - `:req_http_options` - Per-request Req HTTP options forwarded to ReAct runtime
-      - `:llm_opts` - Per-request ReqLLM generation options forwarded to ReAct runtime
+      - `:req_http_options` - Per-request Req HTTP options forwarded to AgenticLoop runtime
+      - `:llm_opts` - Per-request ReqLLM generation options forwarded to AgenticLoop runtime
       - `:timeout` - How long to wait in milliseconds (default: 30_000)
 
       ## Examples
@@ -581,17 +581,17 @@ defmodule BullXAIAgent.Agent do
           pid,
           query,
           Keyword.merge(opts,
-            signal_type: "ai.react.query",
-            source: "/ai/react/agent"
+            signal_type: "ai.agentic_loop.query",
+            source: "/ai/agentic_loop/agent"
           )
         )
       end
 
       @impl true
-      def on_before_cmd(agent, {:ai_react_start, %{query: query} = params} = action) do
+      def on_before_cmd(agent, {:ai_agentic_loop_start, %{query: query} = params} = action) do
         # Ensure we have a request_id for tracking
         {request_id, params} = Request.ensure_request_id(params)
-        action = {:ai_react_start, params}
+        action = {:ai_agentic_loop_start, params}
 
         # Use RequestTracking to manage state
         agent = Request.start_request(agent, request_id, query, stream_to: params[:stream_to])
@@ -602,7 +602,8 @@ defmodule BullXAIAgent.Agent do
       @impl true
       def on_before_cmd(
             agent,
-            {:ai_react_request_error, %{request_id: request_id, reason: reason, message: message}} =
+            {:ai_agentic_loop_request_error,
+             %{request_id: request_id, reason: reason, message: message}} =
               action
           ) do
         error = {:rejected, reason, message}
@@ -620,9 +621,9 @@ defmodule BullXAIAgent.Agent do
       end
 
       @impl true
-      def on_before_cmd(agent, {:ai_react_cancel, params}) do
+      def on_before_cmd(agent, {:ai_agentic_loop_cancel, params}) do
         request_id = params[:request_id] || agent.state[:last_request_id]
-        action = {:ai_react_cancel, Map.put(params, :request_id, request_id)}
+        action = {:ai_agentic_loop_cancel, Map.put(params, :request_id, request_id)}
         {:ok, agent, action}
       end
 
@@ -630,7 +631,7 @@ defmodule BullXAIAgent.Agent do
       def on_before_cmd(agent, action), do: {:ok, agent, action}
 
       @impl true
-      def on_after_cmd(agent, {:ai_react_start, %{request_id: request_id}}, directives) do
+      def on_after_cmd(agent, {:ai_agentic_loop_start, %{request_id: request_id}}, directives) do
         snap = strategy_snapshot(agent)
         should_finalize? = request_pending?(agent, request_id) and snap.done?
 
@@ -663,7 +664,7 @@ defmodule BullXAIAgent.Agent do
       @impl true
       def on_after_cmd(
             agent,
-            {:ai_react_cancel, %{request_id: request_id, reason: reason}},
+            {:ai_agentic_loop_cancel, %{request_id: request_id, reason: reason}},
             directives
           ) do
         agent =
@@ -679,7 +680,7 @@ defmodule BullXAIAgent.Agent do
       end
 
       @impl true
-      def on_after_cmd(agent, {:ai_react_request_error, _params}, directives) do
+      def on_after_cmd(agent, {:ai_agentic_loop_request_error, _params}, directives) do
         {:ok, agent, directives}
       end
 
@@ -816,14 +817,16 @@ defmodule BullXAIAgent.Agent do
             if is_binary(request_id), do: Map.put(p, :request_id, request_id), else: p
           end)
 
-        signal = Jido.Signal.new!("ai.react.cancel", payload, source: "/ai/react/agent")
+        signal =
+          Jido.Signal.new!("ai.agentic_loop.cancel", payload, source: "/ai/agentic_loop/agent")
+
         Jido.AgentServer.cast(pid, signal)
       end
 
       @doc """
       Steer an active request with additional user-visible input.
 
-      Returns `{:ok, agent}` when the input is queued for the current ReAct run
+      Returns `{:ok, agent}` when the input is queued for the current AgenticLoop run
       or `{:error, {:rejected, reason}}` when no eligible run is active.
 
       Queued input is best-effort. If the run terminates before the runtime
@@ -832,10 +835,10 @@ defmodule BullXAIAgent.Agent do
       @spec steer(pid() | atom() | {:via, module(), term()}, String.t(), keyword()) ::
               {:ok, Jido.Agent.t()} | {:error, term()}
       def steer(pid, content, opts \\ []) when is_binary(content) do
-        BullXAIAgent.Reasoning.ReAct.steer(
+        BullXAIAgent.Reasoning.AgenticLoop.steer(
           pid,
           content,
-          Keyword.put_new(opts, :source, "/ai/react/agent")
+          Keyword.put_new(opts, :source, "/ai/agentic_loop/agent")
         )
       end
 
@@ -848,10 +851,10 @@ defmodule BullXAIAgent.Agent do
       @spec inject(pid() | atom() | {:via, module(), term()}, String.t(), keyword()) ::
               {:ok, Jido.Agent.t()} | {:error, term()}
       def inject(pid, content, opts \\ []) when is_binary(content) do
-        BullXAIAgent.Reasoning.ReAct.inject(
+        BullXAIAgent.Reasoning.AgenticLoop.inject(
           pid,
           content,
-          Keyword.put_new(opts, :source, "/ai/react/agent")
+          Keyword.put_new(opts, :source, "/ai/agentic_loop/agent")
         )
       end
 

@@ -7,7 +7,7 @@ defmodule BullXAIAgent.Actions.Planning.Prioritize do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:planning`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:heavy`) or direct spec
   * `tasks` (required) - List of tasks to prioritize
   * `criteria` (optional) - Prioritization criteria (e.g., "impact", "urgency", "effort")
   * `context` (optional) - Additional context about the project
@@ -50,7 +50,7 @@ defmodule BullXAIAgent.Actions.Planning.Prioritize do
     schema:
       Zoi.object(%{
         model:
-          Zoi.any(description: "Model alias (e.g., :planning) or direct model spec string")
+          Zoi.any(description: "Model alias (e.g., :heavy) or direct model spec string")
           |> Zoi.optional(),
         tasks: Zoi.list(Zoi.string(), description: "List of tasks to prioritize"),
         criteria:
@@ -136,7 +136,7 @@ defmodule BullXAIAgent.Actions.Planning.Prioritize do
          {:ok, model} <- resolve_model(params[:model]),
          {:ok, req_context} <- build_prioritize_messages(params),
          opts = build_opts(params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       {:ok, format_result(response, model)}
     end
   end
@@ -148,9 +148,9 @@ defmodule BullXAIAgent.Actions.Planning.Prioritize do
   defp validate_tasks(tasks) when is_list(tasks), do: :ok
   defp validate_tasks(_), do: {:error, :invalid_tasks_format}
 
-  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:planning)}
+  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:heavy)}
   defp resolve_model(model) when is_atom(model), do: {:ok, BullXAIAgent.resolve_model(model)}
-  defp resolve_model(model) when is_binary(model), do: {:ok, model}
+  defp resolve_model(_model), do: {:error, :invalid_model_format}
 
   defp build_prioritize_messages(params) do
     user_prompt = build_prioritize_user_prompt(params)
@@ -336,9 +336,9 @@ defmodule BullXAIAgent.Actions.Planning.Prioritize do
 
   defp plugin_default(context, key) do
     first_present([
-      get_in(context, [:plugin_state, :planning, key]),
-      get_in(context, [:state, :planning, key]),
-      get_in(context, [:agent, :state, :planning, key])
+      get_in(context, [:plugin_state, :planner, key]),
+      get_in(context, [:state, :planner, key]),
+      get_in(context, [:agent, :state, :planner, key])
     ])
   end
 

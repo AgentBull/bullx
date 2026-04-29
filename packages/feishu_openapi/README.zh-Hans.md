@@ -463,6 +463,8 @@ plug FeishuOpenAPI.CardAction.Server, handler: card_handler
 ## WebSocket 事件推送
 
 `FeishuOpenAPI.WS.Client` 会建立 Feishu/Lark 的 WS 事件推送连接，并把解码后的事件负载转发到同一套 dispatcher 模型中。
+WS 连接在建立时已经完成鉴权，因此推送过来的事件 frame 会按可信 decoded
+事件分发，不需要 webhook 的 `Verification Token` 或 `Encrypt Key` 处理。
 
 ```elixir
 {:ok, _pid} =

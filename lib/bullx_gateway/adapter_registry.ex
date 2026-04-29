@@ -6,8 +6,9 @@ defmodule BullXGateway.AdapterRegistry do
 
   @type channel :: BullXGateway.Delivery.channel()
   @type entry :: %{
-          module: module(),
-          config: map()
+          required(:module) => module(),
+          required(:config) => map(),
+          optional(:managed?) => boolean()
         }
 
   def start_link(opts \\ []) do
@@ -15,8 +16,9 @@ defmodule BullXGateway.AdapterRegistry do
     GenServer.start_link(__MODULE__, :ok, name: name)
   end
 
-  def register(channel, module, config \\ %{}) when is_map(config) do
-    GenServer.call(__MODULE__, {:register, channel, module, config})
+  def register(channel, module, config \\ %{}, opts \\ [])
+      when is_map(config) and is_list(opts) do
+    GenServer.call(__MODULE__, {:register, channel, module, config, opts})
   end
 
   def unregister(channel) do
@@ -25,6 +27,10 @@ defmodule BullXGateway.AdapterRegistry do
 
   def lookup(channel) do
     GenServer.call(__MODULE__, {:lookup, channel})
+  end
+
+  def entries do
+    GenServer.call(__MODULE__, :entries)
   end
 
   def dedupe_ttl_ms({adapter, channel_id}) do
@@ -43,8 +49,8 @@ defmodule BullXGateway.AdapterRegistry do
   end
 
   @impl true
-  def handle_call({:register, channel, module, config}, _from, state) do
-    entry = %{module: module, config: config}
+  def handle_call({:register, channel, module, config, opts}, _from, state) do
+    entry = %{module: module, config: config, managed?: Keyword.get(opts, :managed?, false)}
     {:reply, :ok, Map.put(state, normalize_channel(channel), entry)}
   end
 
@@ -56,11 +62,15 @@ defmodule BullXGateway.AdapterRegistry do
     {:reply, lookup_entry(state, normalize_channel(channel)), state}
   end
 
+  def handle_call(:entries, _from, state) do
+    {:reply, state, state}
+  end
+
   defp load_configured_adapters do
     BullX.Config.Gateway.adapters()
     |> Enum.reduce(%{}, fn
       {channel, module, config}, acc when is_map(config) ->
-        Map.put(acc, normalize_channel(channel), %{module: module, config: config})
+        Map.put(acc, normalize_channel(channel), %{module: module, config: config, managed?: true})
 
       _, acc ->
         acc

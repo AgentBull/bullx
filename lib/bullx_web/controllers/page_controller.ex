@@ -4,10 +4,15 @@ defmodule BullXWeb.PageController do
   alias BullXAccounts.User
 
   def home(conn, _params) do
-    case {BullXAccounts.setup_required?(), conn.assigns[:current_user]} do
-      {true, _current_user} -> redirect(conn, to: ~p"/setup")
-      {false, %User{} = user} -> render_control_panel(conn, user)
-      {false, _missing_user} -> redirect(conn, to: ~p"/sessions/new")
+    cond do
+      BullXAccounts.setup_required?() and BullXAccounts.bootstrap_activation_code_pending?() ->
+        redirect(conn, to: ~p"/setup")
+
+      match?(%User{}, conn.assigns[:current_user]) ->
+        render_control_panel(conn, conn.assigns.current_user)
+
+      true ->
+        redirect(conn, to: ~p"/sessions/new")
     end
   end
 

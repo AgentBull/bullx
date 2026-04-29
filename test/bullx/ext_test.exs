@@ -118,6 +118,66 @@ defmodule BullX.ExtTest do
     assert BullX.Ext.argon2_verify("pwd", 123) == {:error, "phc must be a string"}
   end
 
+  describe "aead_encrypt/2 and aead_decrypt/2" do
+    @aead_key "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    @wrong_aead_key "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100"
+
+    test "round trips arbitrary binary plaintext" do
+      plaintext = <<"api-key:", 0, 1, 2, 255>>
+      encrypted = BullX.Ext.aead_encrypt(plaintext, @aead_key)
+
+      assert is_binary(encrypted)
+      assert [_nonce, _ciphertext] = String.split(encrypted, ".")
+      refute String.contains?(encrypted, "=")
+      assert BullX.Ext.aead_decrypt(encrypted, @aead_key) == plaintext
+    end
+
+    test "uses a random nonce for each encryption" do
+      left = BullX.Ext.aead_encrypt("same plaintext", @aead_key)
+      right = BullX.Ext.aead_encrypt("same plaintext", @aead_key)
+
+      assert is_binary(left)
+      assert is_binary(right)
+      assert left != right
+    end
+
+    test "decrypting with a wrong key returns a tagged error" do
+      encrypted = BullX.Ext.aead_encrypt("secret", @aead_key)
+
+      assert {:error, reason} = BullX.Ext.aead_decrypt(encrypted, @wrong_aead_key)
+      assert reason =~ "decryption failed"
+    end
+
+    test "malformed ciphertext returns a tagged error" do
+      assert {:error, _reason} = BullX.Ext.aead_decrypt("not-a-valid-payload", @aead_key)
+      assert {:error, _reason} = BullX.Ext.aead_decrypt("a.b.c", @aead_key)
+    end
+
+    test "truncated ciphertext fails AEAD authentication" do
+      encrypted = BullX.Ext.aead_encrypt("secret", @aead_key)
+      [nonce, ciphertext] = String.split(encrypted, ".")
+      decoded = BullX.Ext.base64_url_safe_decode(ciphertext)
+      truncated = binary_part(decoded, 0, byte_size(decoded) - 1)
+      truncated_ciphertext = BullX.Ext.base64_url_safe_encode(truncated)
+
+      assert {:error, reason} =
+               BullX.Ext.aead_decrypt("#{nonce}.#{truncated_ciphertext}", @aead_key)
+
+      assert reason =~ "decryption failed"
+    end
+
+    test "invalid inputs return tagged errors" do
+      assert BullX.Ext.aead_encrypt(123, @aead_key) ==
+               {:error, "plaintext must be a binary"}
+
+      assert BullX.Ext.aead_encrypt("secret", "bad") ==
+               {:error, "key must be a 64-character hex string"}
+
+      assert BullX.Ext.aead_decrypt(123, @aead_key) ==
+               {:error, "ciphertext must be a string"}
+    end
+  end
+
   test "phone_normalize_e164/1 canonicalizes valid international numbers" do
     assert BullX.Ext.phone_normalize_e164("+8613800138000") == "+8613800138000"
     assert BullX.Ext.phone_normalize_e164("+1 415 555 2671") == "+14155552671"

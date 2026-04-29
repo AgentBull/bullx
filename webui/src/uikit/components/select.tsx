@@ -4,7 +4,23 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/uikit/lib/utils"
 import { RiArrowDownSLine, RiCheckLine, RiArrowUpSLine } from "@remixicon/react"
 
-const Select = SelectPrimitive.Root
+const SelectThemeContext = React.createContext<{
+  theme: string | undefined
+  setTheme: React.Dispatch<React.SetStateAction<string | undefined>>
+} | null>(null)
+
+function Select<Value, Multiple extends boolean | undefined = false>(
+  props: SelectPrimitive.Root.Props<Value, Multiple>
+) {
+  const [theme, setTheme] = React.useState<string | undefined>()
+  const themeContext = React.useMemo(() => ({ theme, setTheme }), [theme])
+
+  return (
+    <SelectThemeContext.Provider value={themeContext}>
+      <SelectPrimitive.Root {...props} />
+    </SelectThemeContext.Provider>
+  )
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
@@ -34,12 +50,26 @@ function SelectTrigger({
 }: SelectPrimitive.Trigger.Props & {
   size?: "sm" | "default"
 }) {
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null)
+  const themeContext = React.useContext(SelectThemeContext)
+
+  React.useLayoutEffect(() => {
+    const theme = triggerRef.current
+      ?.closest<HTMLElement>("[data-theme]")
+      ?.getAttribute("data-theme") || undefined
+
+    if (themeContext && themeContext.theme !== theme) {
+      themeContext.setTheme(theme)
+    }
+  })
+
   return (
     <SelectPrimitive.Trigger
+      ref={triggerRef}
       data-slot="select-trigger"
       data-size={size}
       className={cn(
-        "flex w-fit items-center justify-between gap-2 rounded-none border border-transparent border-b-input bg-field px-4 py-0 text-sm whitespace-nowrap transition-[background-color,border-color] outline-none focus-visible:border-b-ring disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground aria-invalid:border-b-destructive data-placeholder:text-muted-foreground data-[size=default]:h-10 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 dark:aria-invalid:border-b-destructive/50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "flex w-fit cursor-pointer items-center justify-between gap-2 rounded-none border border-transparent border-b-input bg-field px-4 py-0 text-sm whitespace-nowrap transition-[background-color,border-color] outline-none focus-visible:border-b-ring disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground aria-invalid:border-b-destructive data-placeholder:text-muted-foreground data-[size=default]:h-10 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 dark:aria-invalid:border-b-destructive/50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       {...props}
@@ -68,8 +98,10 @@ function SelectContent({
     SelectPrimitive.Positioner.Props,
     "align" | "alignOffset" | "side" | "sideOffset" | "alignItemWithTrigger"
   >) {
+  const themeContext = React.useContext(SelectThemeContext)
+
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal data-theme={themeContext?.theme}>
       <SelectPrimitive.Positioner
         side={side}
         sideOffset={sideOffset}
@@ -118,7 +150,7 @@ function SelectItem({
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
-        "relative flex min-h-10 w-full cursor-default items-center gap-2.5 rounded-none py-2 pr-8 pl-4 text-sm outline-hidden select-none focus:bg-accent focus:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        "relative flex min-h-10 w-full cursor-pointer items-center gap-2.5 rounded-none py-2 pr-8 pl-4 text-sm outline-hidden select-none focus:bg-accent focus:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
         className
       )}
       {...props}
@@ -161,7 +193,7 @@ function SelectScrollUpButton({
     <SelectPrimitive.ScrollUpArrow
       data-slot="select-scroll-up-button"
       className={cn(
-        "top-0 z-10 flex w-full cursor-default items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-3.5",
+        "top-0 z-10 flex w-full cursor-pointer items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-3.5",
         className
       )}
       {...props}
@@ -180,7 +212,7 @@ function SelectScrollDownButton({
     <SelectPrimitive.ScrollDownArrow
       data-slot="select-scroll-down-button"
       className={cn(
-        "bottom-0 z-10 flex w-full cursor-default items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-3.5",
+        "bottom-0 z-10 flex w-full cursor-pointer items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-3.5",
         className
       )}
       {...props}

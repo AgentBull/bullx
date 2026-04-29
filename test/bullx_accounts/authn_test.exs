@@ -7,6 +7,8 @@ defmodule BullXAccounts.AuthNTest do
   alias BullXAccounts.User
   alias BullXAccounts.UserChannelAuthCode
   alias BullXAccounts.UserChannelBinding
+  alias BullXAccounts.UserGroup
+  alias BullXAccounts.UserGroupMembership
 
   setup do
     previous = Application.get_env(:bullx, :accounts)
@@ -248,8 +250,28 @@ defmodule BullXAccounts.AuthNTest do
     used_code = Repo.get!(ActivationCode, activation_code.id)
     assert used_code.used_at
     assert used_code.used_by_adapter == "feishu"
+    refute admin_member?(user)
 
     assert {:error, :already_bound} = BullXAccounts.consume_activation_code(code, input)
+  end
+
+  test "bootstrap activation code consumption grants admin membership to the preauth user" do
+    Repo.delete_all(ActivationCode)
+
+    assert {:ok, %{code: code, activation_code: activation_code}} =
+             BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    assert activation_code.metadata == %{"bootstrap" => true}
+
+    assert {:ok, user, binding} =
+             BullXAccounts.consume_activation_code(code, channel_input("ou_bootstrap_admin"))
+
+    assert binding.user_id == user.id
+    assert admin_member?(user)
+
+    used_code = Repo.get!(ActivationCode, activation_code.id)
+    assert used_code.used_at
+    assert used_code.metadata["bootstrap"] == true
   end
 
   test "activation code consumption uses automatic matching without consuming the code" do
@@ -278,6 +300,37 @@ defmodule BullXAccounts.AuthNTest do
     assert resolved.id == user.id
     assert binding.user_id == user.id
     assert Repo.get!(ActivationCode, activation_code.id).used_at == nil
+  end
+
+  test "bootstrap activation code does not grant admin when automatic matching avoids consumption" do
+    Repo.delete_all(ActivationCode)
+
+    assert {:ok, %{code: code, activation_code: activation_code}} =
+             BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    user = insert_user!(display_name: "Alice", email: "alice@example.com")
+
+    put_accounts_config(
+      authn_match_rules: [
+        %{
+          result: "bind_existing_user",
+          op: "equals_user_field",
+          source_path: "profile.email",
+          user_field: "email"
+        }
+      ]
+    )
+
+    assert {:ok, resolved, binding} =
+             BullXAccounts.consume_activation_code(
+               code,
+               channel_input("ou_bootstrap_match", profile: %{"email" => user.email})
+             )
+
+    assert resolved.id == user.id
+    assert binding.user_id == user.id
+    assert Repo.get!(ActivationCode, activation_code.id).used_at == nil
+    refute admin_member?(user)
   end
 
   test "activation code still works when auto_create_users=false" do
@@ -444,17 +497,209 @@ defmodule BullXAccounts.AuthNTest do
            )
   end
 
-  test "bootstrap creates and logs a single activation code when no user or valid code exists" do
+  test "bootstrap creates one bootstrap activation code on first run and refreshes it on the second" do
     Repo.delete_all(ActivationCode)
 
-    log =
+    log_first =
       capture_log(fn ->
-        BullXAccounts.Bootstrap.run()
         BullXAccounts.Bootstrap.run()
       end)
 
-    assert log =~ "BullX bootstrap activation code:"
+    [created] = Repo.all(ActivationCode)
+    assert created.metadata == %{"bootstrap" => true}
+    assert is_nil(created.used_at)
+    assert log_first =~ "BullX bootstrap activation code (created):"
+
+    log_second =
+      capture_log(fn ->
+        BullXAccounts.Bootstrap.run()
+      end)
+
+    [refreshed] = Repo.all(ActivationCode)
+    assert refreshed.id == created.id
+    assert refreshed.code_hash != created.code_hash
+    assert DateTime.compare(refreshed.expires_at, created.expires_at) in [:gt, :eq]
+    assert refreshed.metadata["bootstrap"] == true
+    assert is_binary(refreshed.metadata["refreshed_at"])
+    assert log_second =~ "BullX bootstrap activation code (refreshed):"
+  end
+
+  test "concurrent bootstrap create_or_refresh keeps a single bootstrap row" do
+    Repo.delete_all(ActivationCode)
+
+    test_pid = self()
+
+    tasks =
+      for _ <- 1..5 do
+        Task.async(fn ->
+          Ecto.Adapters.SQL.Sandbox.allow(Repo, test_pid, self())
+          BullXAccounts.create_or_refresh_bootstrap_activation_code()
+        end)
+      end
+
+    results = Enum.map(tasks, &Task.await(&1, 15_000))
+
+    assert Enum.count(results, &match?({:ok, %{action: :created}}, &1)) == 1
+    assert Enum.count(results, &match?({:ok, %{action: :refreshed}}, &1)) == 4
+
+    [row] = Repo.all(ActivationCode)
+    assert row.metadata["bootstrap"] == true
+    assert is_nil(row.used_at)
+  end
+
+  test "bootstrap does nothing when a bootstrap activation code has already been consumed" do
+    Repo.delete_all(ActivationCode)
+
+    consumed_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %ActivationCode{}
+    |> ActivationCode.changeset(%{
+      code_hash: "argon2id$consumed-bootstrap",
+      expires_at: DateTime.add(consumed_at, 86_400, :second),
+      used_at: consumed_at,
+      used_by_adapter: "feishu",
+      used_by_channel_id: "main",
+      used_by_external_id: "ou_consumer",
+      metadata: %{"bootstrap" => true}
+    })
+    |> Repo.insert!()
+
+    log = capture_log(fn -> BullXAccounts.Bootstrap.run() end)
+
+    refute log =~ "BullX bootstrap activation code"
     assert Repo.aggregate(ActivationCode, :count) == 1
+  end
+
+  test "bootstrap does nothing when any user already exists" do
+    Repo.delete_all(ActivationCode)
+    insert_user!(display_name: "Existing")
+
+    log = capture_log(fn -> BullXAccounts.Bootstrap.run() end)
+
+    refute log =~ "BullX bootstrap activation code"
+    assert Repo.aggregate(ActivationCode, :count) == 0
+  end
+
+  test "bootstrap_activation_code_pending? matches the lifecycle of the bootstrap row" do
+    Repo.delete_all(ActivationCode)
+    refute BullXAccounts.bootstrap_activation_code_pending?()
+
+    {:ok, %{activation_code: row}} = BullXAccounts.create_or_refresh_bootstrap_activation_code()
+    assert BullXAccounts.bootstrap_activation_code_pending?()
+
+    {:ok, _} = BullXAccounts.revoke_activation_code(row)
+    refute BullXAccounts.bootstrap_activation_code_pending?()
+
+    Repo.delete_all(ActivationCode)
+    refute BullXAccounts.bootstrap_activation_code_pending?()
+
+    {:ok, _} = BullXAccounts.create_activation_code(nil, %{source: "operator"})
+    refute BullXAccounts.bootstrap_activation_code_pending?()
+  end
+
+  test "verify_bootstrap_activation_code returns the matched row's hash on a valid plaintext" do
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{code: plaintext, activation_code: row}} =
+      BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    assert {:ok, code_hash} = BullXAccounts.verify_bootstrap_activation_code(plaintext)
+    assert code_hash == row.code_hash
+  end
+
+  test "verify_bootstrap_activation_code rejects unknown, revoked, used, expired, or operator codes" do
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{code: plaintext_a, activation_code: row_a}} =
+      BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    assert {:error, :invalid_or_expired_code} =
+             BullXAccounts.verify_bootstrap_activation_code("NOT-THE-CODE")
+
+    {:ok, _} = BullXAccounts.revoke_activation_code(row_a)
+
+    assert {:error, :invalid_or_expired_code} =
+             BullXAccounts.verify_bootstrap_activation_code(plaintext_a)
+
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{code: plaintext_b, activation_code: row_b}} =
+      BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    row_b
+    |> Ecto.Changeset.change(%{
+      used_at: DateTime.utc_now() |> DateTime.truncate(:microsecond),
+      used_by_adapter: "feishu",
+      used_by_channel_id: "main",
+      used_by_external_id: "ou_marker"
+    })
+    |> Repo.update!()
+
+    assert {:error, :invalid_or_expired_code} =
+             BullXAccounts.verify_bootstrap_activation_code(plaintext_b)
+
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{code: plaintext_c, activation_code: row_c}} =
+      BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    row_c
+    |> Ecto.Changeset.change(%{
+      expires_at: DateTime.add(DateTime.utc_now(), -60, :second)
+    })
+    |> Repo.update!()
+
+    assert {:error, :invalid_or_expired_code} =
+             BullXAccounts.verify_bootstrap_activation_code(plaintext_c)
+
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{code: operator_plaintext}} =
+      BullXAccounts.create_activation_code(nil, %{source: "operator"})
+
+    assert {:error, :invalid_or_expired_code} =
+             BullXAccounts.verify_bootstrap_activation_code(operator_plaintext)
+  end
+
+  test "bootstrap_activation_code_valid_for_hash? matches only the live bootstrap row" do
+    Repo.delete_all(ActivationCode)
+
+    refute BullXAccounts.bootstrap_activation_code_valid_for_hash?(nil)
+    refute BullXAccounts.bootstrap_activation_code_valid_for_hash?("does-not-exist")
+
+    {:ok, %{code: plaintext, activation_code: row}} =
+      BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
+    assert {:ok, code_hash} = BullXAccounts.verify_bootstrap_activation_code(plaintext)
+    assert BullXAccounts.bootstrap_activation_code_valid_for_hash?(code_hash)
+
+    {:ok, _} = BullXAccounts.revoke_activation_code(row)
+    refute BullXAccounts.bootstrap_activation_code_valid_for_hash?(code_hash)
+
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{activation_code: operator_row}} =
+      BullXAccounts.create_activation_code(nil, %{source: "operator"})
+
+    refute BullXAccounts.bootstrap_activation_code_valid_for_hash?(operator_row.code_hash)
+  end
+
+  test "bootstrap ignores operator-issued activation codes when deciding whether to issue a bootstrap code" do
+    Repo.delete_all(ActivationCode)
+
+    {:ok, %{activation_code: operator_code}} =
+      BullXAccounts.create_activation_code(nil, %{source: "operator"})
+
+    log = capture_log(fn -> BullXAccounts.Bootstrap.run() end)
+
+    bootstrap_codes =
+      ActivationCode
+      |> Repo.all()
+      |> Enum.filter(&(&1.metadata["bootstrap"] == true))
+
+    assert log =~ "BullX bootstrap activation code (created):"
+    assert length(bootstrap_codes) == 1
+    assert Repo.get!(ActivationCode, operator_code.id).metadata["bootstrap"] != true
   end
 
   defp put_accounts_config(opts \\ []) do
@@ -502,5 +747,18 @@ defmodule BullXAccounts.AuthNTest do
     %UserChannelBinding{}
     |> UserChannelBinding.changeset(attrs)
     |> Repo.insert!()
+  end
+
+  defp admin_member?(%User{id: user_id}) do
+    case Repo.get_by(UserGroup, name: "admin") do
+      nil ->
+        false
+
+      %UserGroup{id: group_id} ->
+        Repo.exists?(
+          from membership in UserGroupMembership,
+            where: membership.user_id == ^user_id and membership.group_id == ^group_id
+        )
+    end
   end
 end

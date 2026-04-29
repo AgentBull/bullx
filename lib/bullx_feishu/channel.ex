@@ -5,7 +5,6 @@ defmodule BullXFeishu.Channel do
   require Logger
 
   alias BullXFeishu.{Cache, Config, EventListener}
-  alias FeishuOpenAPI.CardAction.Handler
   alias FeishuOpenAPI.Event.Dispatcher
 
   defstruct [:channel, :config, :cache]
@@ -31,17 +30,21 @@ defmodule BullXFeishu.Channel do
     GenServer.call(via(channel), {:card_action, action}, 30_000)
   end
 
-  def event_dispatcher(channel, %Config{} = config) do
-    Config.verification_opts(config)
-    |> Keyword.put(:client, Config.client!(config))
-    |> Dispatcher.new()
-    |> register_event_handlers(channel)
+  def transport_status(channel) do
+    transport_key = {FeishuOpenAPI.WS.Client, channel}
+
+    case Registry.lookup(BullXGateway.AdapterSupervisor.Registry, transport_key) do
+      [{pid, _value}] when is_pid(pid) -> FeishuOpenAPI.WS.Client.status(pid)
+      [] -> :not_started
+    end
+  catch
+    :exit, _reason -> :down
   end
 
-  def card_action_handler(channel, %Config{} = config) do
-    Config.verification_opts(config)
-    |> Keyword.put(:handler, fn action -> handle_card_action(channel, action) end)
-    |> Handler.new()
+  def event_dispatcher(channel, %Config{} = config) do
+    [client: Config.client!(config)]
+    |> Dispatcher.new()
+    |> register_event_handlers(channel)
   end
 
   def transport_via(key), do: {:via, Registry, {BullXGateway.AdapterSupervisor.Registry, key}}
@@ -53,9 +56,8 @@ defmodule BullXFeishu.Channel do
     Logger.info("feishu channel start requested",
       channel: :feishu,
       channel_id: cfg.channel_id,
-      connection_mode: cfg.connection_mode,
-      domain: inspect(cfg.domain),
-      app_type: cfg.app_type
+      transport: :websocket,
+      domain: inspect(cfg.domain)
     )
 
     {:ok, %__MODULE__{channel: channel, config: cfg, cache: Cache.new()}}

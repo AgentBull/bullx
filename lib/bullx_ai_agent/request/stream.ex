@@ -3,10 +3,10 @@ defmodule BullXAIAgent.Request.Stream do
   Request-scoped runtime event streaming helpers.
 
   The stream transport is intentionally narrow: callers can provide a pid sink
-  and receive canonical ReAct runtime events for one request.
+  and receive canonical AgenticLoop runtime events for one request.
   """
 
-  alias BullXAIAgent.Reasoning.ReAct.Event
+  alias BullXAIAgent.Reasoning.AgenticLoop.Event
   alias BullXAIAgent.Request.Handle
 
   @message_tag :bullx_ai_agent_request_event

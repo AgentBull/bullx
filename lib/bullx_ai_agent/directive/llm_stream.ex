@@ -272,7 +272,7 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.LLMStream do
 
     messages = Helpers.build_directive_messages(context, system_prompt)
 
-    case ReqLLM.stream_text(model, messages, opts) do
+    case BullXAIAgent.stream_text(messages, model: model, opts: opts) do
       {:ok, stream_response} ->
         on_content = fn text ->
           partial_signal =
@@ -287,22 +287,8 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.LLMStream do
           maybe_emit_delta(obs_cfg, Observe.llm(:delta), %{duration_ms: 0}, event_meta)
         end
 
-        on_thinking = fn text ->
-          partial_signal =
-            Signal.LLMDelta.new!(%{
-              call_id: call_id,
-              delta: text,
-              chunk_type: :thinking
-            })
-
-          Jido.AgentServer.cast(agent_pid, partial_signal)
-
-          maybe_emit_delta(obs_cfg, Observe.llm(:delta), %{duration_ms: 0}, event_meta)
-        end
-
         case ReqLLM.StreamResponse.process_stream(stream_response,
-               on_result: on_content,
-               on_thinking: on_thinking
+               on_result: on_content
              ) do
           {:ok, response} ->
             turn = Turn.from_response(response, model: model)

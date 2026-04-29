@@ -8,7 +8,7 @@ defmodule BullXAIAgent.Actions.LLM.Chat do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:fast`, `:capable`) or direct spec (e.g., `"anthropic:claude-haiku-4-5"`)
+  * `model` (optional) - Model alias (e.g., `:default`, `:fast`) or direct spec (e.g., `"anthropic:claude-haiku-4-5"`)
   * `prompt` (required) - The user prompt to send to the LLM
   * `system_prompt` (optional) - System prompt to guide the LLM's behavior
   * `max_tokens` (optional) - Maximum tokens to generate (default: `1024`)
@@ -24,7 +24,7 @@ defmodule BullXAIAgent.Actions.LLM.Chat do
 
       # With system prompt
       {:ok, result} = Jido.Exec.run(BullXAIAgent.Actions.LLM.Chat, %{
-        model: :capable,
+        model: :default,
         prompt: "Explain GenServers",
         system_prompt: "You are an expert Elixir teacher.",
         temperature: 0.5
@@ -109,7 +109,7 @@ defmodule BullXAIAgent.Actions.LLM.Chat do
          {:ok, req_context} <-
            build_messages(validated_params[:prompt], validated_params[:system_prompt]),
          opts = Helpers.build_opts(validated_params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       duration_native = System.monotonic_time() - start_time
 
       measurements = %{

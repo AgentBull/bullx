@@ -72,9 +72,9 @@ t("web.sessions.new.placeholder", { values: { form_action: formAction } })
 - `<html dir>` set from the server side.
 - `mix i18n.check` extension to validate client TOMLs.
 - `web.*` keys for the existing React SPAs:
-  - `webui/src/spas/control-panel/App.jsx`
-  - `webui/src/spas/setup/App.jsx`
-  - `webui/src/spas/sessions/New.jsx`
+  - `webui/src/apps/control-panel/App.jsx`
+  - `webui/src/apps/setup/App.jsx`
+  - `webui/src/apps/sessions/New.jsx`
 
 `app.*` keys (including `app.connectivity.*`, `app.close`, `app.actions`) stay in `priv/locales/*.toml`. They are consumed by server-side HEEx components (`BullXWeb.CoreComponents`, `BullXWeb.Layouts`), not by React. Whichever side renders the markup owns the key; nothing forces the namespace to follow the prefix.
 
@@ -106,7 +106,7 @@ The frontend side currently has:
 
 - Rsbuild config in `rsbuild.config.mjs`.
 - A single React/Inertia entrypoint in `webui/src/app.jsx`.
-- React pages under `webui/src/spas/**`.
+- React pages under `webui/src/apps/**`.
 - Hard-coded English UI strings in those React pages.
 - No frontend i18n runtime or catalog.
 

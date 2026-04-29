@@ -10,7 +10,7 @@ defmodule BullXAIAgent.Plugins.ModelRouting do
   Route selection follows deterministic precedence:
 
   1. Exact signal type route (for example, `"chat.message"`)
-  2. Wildcard pattern route (for example, `"reasoning.*.run"`)
+  2. Wildcard pattern route
 
   If the inbound payload already includes `:model` (or `"model"`), the plugin
   bypasses routing and preserves the explicit model choice.
@@ -19,8 +19,8 @@ defmodule BullXAIAgent.Plugins.ModelRouting do
 
   Wildcard routes use `*` as a single dot-delimited segment matcher.
 
-  - `"reasoning.*.run"` matches `"reasoning.cot.run"` and `"reasoning.tot.run"`
-  - `"reasoning.*.run"` does not match `"reasoning.cot.worker.run"`
+  - `"chat.*"` matches `"chat.message"` and `"chat.simple"`
+  - `"chat.*"` does not match `"chat.message.extra"`
 
   ## Usage
 
@@ -34,10 +34,10 @@ defmodule BullXAIAgent.Plugins.ModelRouting do
       {BullXAIAgent.Plugins.ModelRouting,
        %{
          routes: %{
-           "chat.message" => :capable,
+           "chat.message" => :default,
            "chat.simple" => :fast,
-           "chat.generate_object" => :thinking,
-           "reasoning.*.run" => :reasoning
+           "chat.generate_object" => :default,
+           "reasoning.*.run" => :heavy
          }
        }}
     ]
@@ -56,12 +56,12 @@ defmodule BullXAIAgent.Plugins.ModelRouting do
   alias Jido.Signal
 
   @default_routes %{
-    "chat.message" => :capable,
+    "chat.message" => :default,
     "chat.simple" => :fast,
     "chat.complete" => :fast,
-    "chat.embed" => :embedding,
-    "chat.generate_object" => :thinking,
-    "reasoning.*.run" => :reasoning
+    "chat.generate_object" => :default,
+    "chat.compress" => :compression,
+    "reasoning.*.run" => :heavy
   }
 
   @impl true

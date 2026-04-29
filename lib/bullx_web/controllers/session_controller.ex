@@ -4,10 +4,15 @@ defmodule BullXWeb.SessionController do
   alias BullXAccounts.User
 
   def new(conn, _params) do
-    case {BullXAccounts.setup_required?(), conn.assigns[:current_user]} do
-      {true, _current_user} -> redirect(conn, to: ~p"/setup")
-      {false, %User{}} -> redirect(conn, to: ~p"/")
-      {false, _missing_user} -> render_new(conn)
+    cond do
+      BullXAccounts.setup_required?() and BullXAccounts.bootstrap_activation_code_pending?() ->
+        redirect(conn, to: ~p"/setup")
+
+      match?(%User{}, conn.assigns[:current_user]) ->
+        redirect(conn, to: ~p"/")
+
+      true ->
+        render_new(conn)
     end
   end
 

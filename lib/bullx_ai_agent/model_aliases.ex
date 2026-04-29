@@ -1,93 +1,31 @@
 defmodule BullXAIAgent.ModelAliases do
   @moduledoc """
-  Shared model alias resolution for public AI facades and ReAct runtime config.
+  Four-alias model resolution backed by the LLM provider catalog.
+
+  Allowed aliases are statically `:default`, `:fast`, `:heavy`, and
+  `:compression`. Each persisted alias binding targets a provider row. When
+  `:fast` or `:heavy` has no row, it reuses the `:default` provider; when
+  `:compression` has no row, it reuses the resolved `:fast` provider.
   """
 
-  @type model_alias ::
-          :fast | :capable | :thinking | :reasoning | :planning | :image | :embedding | atom()
+  @type alias_name :: :default | :fast | :heavy | :compression
 
-  @default_aliases %{
-    fast: "anthropic:claude-haiku-4-5",
-    capable: "anthropic:claude-sonnet-4-20250514",
-    thinking: "anthropic:claude-sonnet-4-20250514",
-    reasoning: "anthropic:claude-sonnet-4-20250514",
-    planning: "anthropic:claude-sonnet-4-20250514",
-    image: "openai:gpt-image-1",
-    embedding: "openai:text-embedding-3-small"
-  }
+  @aliases [:default, :fast, :heavy, :compression]
 
-  @doc """
-  Returns configured model aliases merged over built-in defaults.
-  """
-  @spec model_aliases() :: %{model_alias() => ReqLLM.model_input()}
-  def model_aliases do
-    configured = BullXAIAgent.config(:model_aliases, %{}) |> normalize_model_aliases()
-    Map.merge(@default_aliases, configured)
+  @spec aliases() :: [alias_name()]
+  def aliases, do: @aliases
+
+  @spec alias?(term()) :: boolean()
+  def alias?(value), do: value in @aliases
+
+  @spec resolve_model(alias_name()) :: BullXAIAgent.LLM.ResolvedProvider.t() | no_return()
+  def resolve_model(alias_name) when alias_name in @aliases do
+    BullXAIAgent.LLM.Catalog.resolve_alias!(alias_name)
   end
 
-  @doc """
-  Resolves an alias atom to a provider model spec.
-  """
-  @spec resolve_model(model_alias()) :: ReqLLM.model_input()
-  def resolve_model(model) when is_atom(model) do
-    aliases = model_aliases()
-
-    case Map.get(aliases, model) do
-      nil ->
-        raise ArgumentError,
-              "Unknown model alias: #{inspect(model)}. " <>
-                "Available aliases: #{inspect(Map.keys(aliases))}"
-
-      spec ->
-        validate_alias_spec!(model, spec)
-    end
-  end
-
-  defp normalize_model_aliases(aliases) when is_map(aliases), do: aliases
-  defp normalize_model_aliases(_), do: %{}
-
-  defp validate_alias_spec!(alias_name, spec) do
-    cond do
-      is_binary(spec) ->
-        spec
-
-      valid_reqllm_input_shape?(spec) ->
-        validate_reqllm_model_input!(alias_name, spec)
-
-      true ->
-        raise_invalid_alias_spec!(alias_name, spec, "unsupported value shape")
-    end
-  end
-
-  defp validate_reqllm_model_input!(alias_name, spec) do
-    case ReqLLM.model(spec) do
-      {:ok, _model} ->
-        spec
-
-      {:error, reason} ->
-        raise_invalid_alias_spec!(alias_name, spec, format_reason(reason))
-    end
-  end
-
-  defp valid_reqllm_input_shape?(%LLMDB.Model{}), do: true
-  defp valid_reqllm_input_shape?(spec) when is_map(spec) and not is_struct(spec), do: true
-
-  defp valid_reqllm_input_shape?({provider, model_id, provider_opts})
-       when is_atom(provider) and is_binary(model_id) and is_list(provider_opts),
-       do: true
-
-  defp valid_reqllm_input_shape?({provider, provider_opts})
-       when is_atom(provider) and is_list(provider_opts),
-       do: true
-
-  defp valid_reqllm_input_shape?(_), do: false
-
-  defp raise_invalid_alias_spec!(alias_name, spec, detail) do
+  def resolve_model(other) do
     raise ArgumentError,
-          "Invalid model spec configured for alias #{inspect(alias_name)}: #{inspect(spec)}. " <>
-            "Expected a valid ReqLLM model input. #{detail}"
+          "Unknown model alias: #{inspect(other)}. " <>
+            "Allowed aliases are :default, :fast, :heavy, :compression."
   end
-
-  defp format_reason(reason) when is_exception(reason), do: Exception.message(reason)
-  defp format_reason(reason), do: inspect(reason)
 end

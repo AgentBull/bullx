@@ -79,7 +79,7 @@ bun run lint
 
 ## Rsbuild Asset Builds
 
-The React/Inertia app entry is `webui/src/app.jsx`, with SPA pages under `webui/src/spas/`. For deployable assets, Rsbuild writes `priv/static/assets/.rsbuild/manifest.json`, and Phoenix resolves scripts and styles from that manifest outside development.
+The React/Inertia app entry is `webui/src/app.jsx`, with SPA pages under `webui/src/apps/`. For deployable assets, Rsbuild writes `priv/static/assets/.rsbuild/manifest.json`, and Phoenix resolves scripts and styles from that manifest outside development.
 Run Bun from the repository root; Rsbuild uses `webui/src/` for application source and `assets/css/` for the Phoenix CSS entry.
 
 ```sh

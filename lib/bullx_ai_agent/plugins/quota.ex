@@ -34,8 +34,8 @@ defmodule BullXAIAgent.Plugins.Quota do
   ## Budget Rejection Contract
 
   When quota `enabled: true` and usage is at/over budget for either
-  `max_requests` or `max_total_tokens`, budgeted signals (`chat.*`,
-  `ai.*.query`, `reasoning.*.run`) are rewritten to `ai.request.error` with:
+  `max_requests` or `max_total_tokens`, budgeted signals (`chat.*` and
+  `ai.agentic_loop.query`) are rewritten to `ai.request.error` with:
 
   - `request_id` from request/call correlation fields when present
   - `reason: :quota_exceeded`
@@ -82,14 +82,7 @@ defmodule BullXAIAgent.Plugins.Quota do
     "chat.simple",
     "chat.complete",
     "chat.generate_object",
-    "ai.react.query",
-    "ai.cod.query",
-    "ai.aot.query",
-    "ai.cot.query",
-    "ai.tot.query",
-    "ai.got.query",
-    "ai.trm.query",
-    "ai.adaptive.query"
+    "ai.agentic_loop.query"
   ]
 
   @impl true
@@ -199,8 +192,7 @@ defmodule BullXAIAgent.Plugins.Quota do
   end
 
   defp budgeted_signal?(type) when is_binary(type) do
-    type in @budgeted_signals or
-      (String.starts_with?(type, "reasoning.") and String.ends_with?(type, ".run"))
+    type in @budgeted_signals
   end
 
   defp budgeted_signal?(_), do: false

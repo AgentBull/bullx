@@ -83,6 +83,9 @@ not_equal_to = "必须不等于 {$number}"
 [users]
 greeting = "你好，{$name}！"
 
+[setup.bootstrap]
+activation_code_invalid = "引导激活码无效或已过期。"
+
 [gateway.feishu.auth]
 activation_required = "请在与机器人的私聊中发送 /preauth <code> 激活这个飞书账号。"
 activation_success = "激活完成。这个飞书账号已关联到 BullX。"

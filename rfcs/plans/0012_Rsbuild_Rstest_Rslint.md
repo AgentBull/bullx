@@ -47,7 +47,7 @@ No OTP supervision boundary changes. The Phoenix endpoint still owns the dev wat
 ### Invariants
 
 - `webui/src/app.jsx` is the React/Inertia entry.
-- SPA pages live under `webui/src/spas/`.
+- SPA pages live under `webui/src/apps/`.
 - Production assets remain served from `/assets`.
 - `mix assets.deploy` still runs compilation, the JS asset build, and `phx.digest`.
 - `bun precommit` is the developer precommit entrypoint.

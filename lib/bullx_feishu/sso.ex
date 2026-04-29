@@ -122,10 +122,13 @@ defmodule BullXFeishu.SSO do
            channel_id: config.channel_id,
            external_id: "feishu:" <> open_id,
            profile: profile(userinfo),
-           metadata: %{
-             "channel_id" => config.channel_id,
-             "domain" => to_string(config.domain)
-           }
+           metadata:
+             %{
+               "channel_id" => config.channel_id,
+               "tenant_key" => Map.get(userinfo, "tenant_key"),
+               "domain" => to_string(config.domain)
+             }
+             |> reject_nil_values()
          }}
 
       _ ->
@@ -145,7 +148,6 @@ defmodule BullXFeishu.SSO do
     |> maybe_put("open_id", Map.get(userinfo, "open_id"))
     |> maybe_put("union_id", Map.get(userinfo, "union_id"))
     |> maybe_put("user_id", Map.get(userinfo, "user_id"))
-    |> maybe_put("tenant_key", Map.get(userinfo, "tenant_key"))
   end
 
   defp build_authorization_url(%Config{} = config, redirect_uri, state) do
@@ -194,6 +196,8 @@ defmodule BullXFeishu.SSO do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 
   defp maybe_put_phone(map, nil), do: map
 

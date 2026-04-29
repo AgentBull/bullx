@@ -7,7 +7,8 @@ defmodule BullXAIAgent.Actions.Helpers do
 
   ## Functions
 
-  * `resolve_model/2` - Resolve model alias to spec
+  * `resolve_model/2` - Resolve model alias to a provider catalog entry
+  * `generate_text/3` - Call text generation with a resolved provider
   * `build_opts/2` - Build options for LLM requests
   * `extract_text/1` - Extract text from LLM response
   * `extract_usage/1` - Extract usage information from response
@@ -22,7 +23,7 @@ defmodule BullXAIAgent.Actions.Helpers do
         with {:ok, model} <- resolve_model(params[:model], :fast),
              {:ok, messages} <- build_messages(params),
              opts <- build_opts(params),
-             {:ok, response} <- ReqLLM.Generation.generate_text(model, messages, opts) do
+             {:ok, response} <- generate_text(model, messages, opts) do
           {:ok, format_result(response)}
         end
       end
@@ -33,28 +34,25 @@ defmodule BullXAIAgent.Actions.Helpers do
   alias BullXAIAgent.Turn
 
   @doc """
-  Resolves a model parameter to a model spec.
+  Resolves a model parameter to a DB-backed provider.
 
   ## Parameters
 
-  * `model` - Model alias or direct ReqLLM model input
+  * `model` - Model alias
   * `default` - Default model alias to use if model is nil
 
   ## Returns
 
-  * `{:ok, model_input}` - Successfully resolved model
+  * `{:ok, resolved_provider}` - Successfully resolved model
   * `{:error, :invalid_model_format}` - Invalid model format
 
   ## Examples
 
       iex> resolve_model(nil, :fast)
-      {:ok, "anthropic:claude-haiku-4-5"}
+      {:ok, %BullXAIAgent.LLM.ResolvedProvider{}}
 
-      iex> resolve_model(:capable, :fast)
-      {:ok, "anthropic:claude-sonnet-4-20250514"}
-
-      iex> resolve_model("openai:gpt-4", :fast)
-      {:ok, "openai:gpt-4"}
+      iex> resolve_model(:heavy, :fast)
+      {:ok, %BullXAIAgent.LLM.ResolvedProvider{}}
   """
   def resolve_model(nil, default), do: {:ok, BullXAIAgent.resolve_model(default)}
 
@@ -62,6 +60,27 @@ defmodule BullXAIAgent.Actions.Helpers do
     {:ok, BullXAIAgent.resolve_model(model)}
   rescue
     ArgumentError -> {:error, :invalid_model_format}
+  end
+
+  @doc """
+  Calls `BullXAIAgent.generate_text/2` with an already resolved provider.
+  """
+  def generate_text(model, messages, opts) when is_list(opts) do
+    BullXAIAgent.generate_text(messages, Keyword.put(opts, :model, model))
+  end
+
+  @doc """
+  Calls `BullXAIAgent.generate_object/3` with an already resolved provider.
+  """
+  def generate_object(model, messages, object_schema, opts) when is_list(opts) do
+    BullXAIAgent.generate_object(messages, object_schema, Keyword.put(opts, :model, model))
+  end
+
+  @doc """
+  Calls `BullXAIAgent.stream_text/2` with an already resolved provider.
+  """
+  def stream_text(model, messages, opts) when is_list(opts) do
+    BullXAIAgent.stream_text(messages, Keyword.put(opts, :model, model))
   end
 
   @doc """

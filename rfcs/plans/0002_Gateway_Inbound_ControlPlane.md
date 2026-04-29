@@ -37,11 +37,15 @@ The egress half is summarised at the boundary (see RFC 0003) and only as much as
   - Add the inbound Gateway runtime path: `BullX.Gateway.publish_inbound/1` -> `InboundReceived` -> `Security` -> `Deduper` -> `Gating` -> `Moderation` -> `Jido.Signal.Bus.publish/2` -> `Deduper.mark_seen`.
   - Replace the empty Gateway supervisor with `CoreSupervisor` + `AdapterSupervisor` and move application startup order to `Repo -> Config -> Gateway.CoreSupervisor -> Skills -> Brain -> Runtime -> Gateway.AdapterSupervisor -> Endpoint`.
   - Add the inbound durable schema `gateway_dedupe_seen` plus its Ecto wrapper.
+  - Extend the adapter contract with a side-effect-light connectivity check used by setup/control-plane writes before a configured adapter is persisted.
+  - Add a Gateway-owned adapter-config codec for database-backed `config :bullx, :gateway, adapters` values, so Setup can write complex adapter arrays without teaching BullXWeb how to build runtime tuples.
 - **Invariants that must remain true**
   - Gateway Core still must not model business-domain events or parse `event.data`.
   - Inbound dedupe is `(source, id)` based and `mark_seen` happens only after Bus publish succeeds.
   - `Gateway` code must stay independent of `Plug.Conn`; only `Webhook.RawBodyReader` may touch Plug types.
   - The final published inbound signal must be JSON-neutral, string-keyed, and always carry non-empty `content` plus `event`.
+  - Setup/control-plane adapter writes must not start adapter children, publish signals, consume activation codes, or mutate account state.
+  - A persisted adapter array is accepted only after every enabled adapter entry has a fresh successful connectivity check for the exact submitted entry fingerprint.
 - **Verification commands**
   - `mix test test/bullx/application_test.exs test/bullx_gateway`
   - `mix precommit`
@@ -61,6 +65,7 @@ The egress half is summarised at the boundary (see RFC 0003) and only as much as
 9. Performs `delivery.id` outbound dedupe (RFC 0003).
 10. Runs the policy pipeline hooks defined in §6.8.
 11. Emits telemetry: publish failed / adapter crashed / queue length / delivery succeeded / failed / pipeline decisions.
+12. Provides a control-plane adapter configuration boundary: parse/validate a database-backed adapter array, convert it to runtime adapter specs, and run adapter connectivity checks before setup saves.
 
 ### 2.2 What Gateway Core explicitly does not do (cross-cutting non-goals)
 
@@ -76,6 +81,8 @@ The egress half is summarised at the boundary (see RFC 0003) and only as much as
 - Does not perform audit-grade rejection persistence (rejections go to telemetry only).
 - Does not attempt mid-stream durability (only the `stream_close` outcome is durable; see RFC 0003).
 - Does not ship default Gating / Moderation / Security implementations; the application layer provides them.
+- Does not own the Setup UI. BullXWeb renders the Inertia application and calls Gateway's adapter-config and connectivity boundary; Gateway owns only the adapter contract and runtime shape.
+- Does not persist or echo plaintext secrets outside `app_configs`. Adapter connectivity result payloads must be safe to log or render and must never contain app secrets, tokens, webhook bodies, or OAuth codes.
 
 ### 2.3 Inbound-focused do / don't
 
@@ -768,11 +775,25 @@ defmodule BullXGateway.Adapter do
   # metadata capabilities — adapter self-description for UI / Runtime reference; not used in pre-check
   @type metadata_capability :: :reactions | :cards | :threads | atom()
   @type capability :: op_capability() | metadata_capability()
+  @type localized_url_map :: %{String.t() => String.t()}
+  @type connectivity_status :: :ok
+  @type connectivity_result :: %{
+          required(:status) => connectivity_status(),
+          optional(:adapter) => atom(),
+          optional(:channel_id) => String.t(),
+          optional(:identity) => map(),
+          optional(:capabilities) => [capability()],
+          optional(:details) => map()
+        }
 
   @callback adapter_id() :: atom()
+  @callback config_docs() :: localized_url_map()
 
   @callback child_specs(channel :: BullX.Delivery.channel(), config :: map()) ::
               [Supervisor.child_spec()]
+
+  @callback connectivity_check(channel :: BullX.Delivery.channel(), config :: map()) ::
+              {:ok, connectivity_result()} | {:error, map()}
 
   @callback deliver(BullX.Delivery.t(), context()) ::
               {:ok, BullXGateway.Delivery.Outcome.adapter_success_t()} | {:error, map()}
@@ -794,11 +815,25 @@ end
 Callback contract:
 
 - `adapter_id/0` **required**: module's static identity (atom).
+- `config_docs/0` **required**: localized operator documentation URLs keyed by BCP 47-ish locale strings. Setup/control-plane UI selects the current locale key and falls back to `"en-US"` when the adapter does not provide a locale-specific URL.
 - `child_specs/2` **optional**: the adapter starts its own listener / WebSocket / polling / webhook server / signature verifier / rate limiter / token manager. Gateway hangs them under `AdapterSupervisor`.
+- `connectivity_check/2` **required**: validates the channel config enough to prove credentials and endpoint reachability before setup/control-plane code persists an enabled adapter. It may perform bounded external API calls, but it must not start listener children, register the channel, publish inbound signals, enqueue deliveries, consume activation codes, or mutate BullX account/config state. Returned maps must be JSON-neutral and secret-free.
 - `context` contains at least `%{channel, config, telemetry}`; additional fields are allowed (e.g. an anchor pid for the adapter subtree, so ScopeWorker can `Process.monitor` it).
 - `deliver/2` **optional**: handles `:send` and `:edit` ops. The adapter must declare the matching op in `capabilities/0`.
 - `stream/3` **optional**: handles `:stream`, consuming an `Enumerable.t()`. The adapter must declare `:stream` in `capabilities/0`.
 - `capabilities/0` **required**: part of the adapter contract. Gateway `deliver/1` pre-check (RFC 0003) depends on it. Pure inbound adapters (e.g. GitHub webhook) return `[]`.
+
+Connectivity error maps follow the same adapter-owned, JSON-neutral convention as delivery errors:
+
+```elixir
+%{
+  "kind" => "auth" | "config" | "network" | "rate_limited" | "unknown",
+  "message" => "safe operator-facing summary",
+  "details" => %{}
+}
+```
+
+Adapters should use `"auth"` for rejected credentials, `"config"` for locally invalid required fields, `"network"` for DNS/TLS/timeout/reachability failures, and `"rate_limited"` when the external platform refuses the check temporarily. Secrets, tokens, OAuth codes, raw response bodies, and decrypted webhook payloads must not appear in `message` or `details`.
 
 **Two capability semantics, kept separate:**
 
@@ -833,6 +868,75 @@ def capabilities, do: []                        # no outbound capability
 ```
 
 A missing callback combined with a missing capability declaration means **the adapter does not support the corresponding op**. Gateway pre-check uses `capabilities/0` and never relies on `function_exported?` to decide.
+
+### 6.2.1 Setup/control-plane adapter configuration
+
+The runtime adapter list still resolves to the tuple shape used everywhere else in Gateway:
+
+```elixir
+[
+  {{:feishu, "default"}, BullXFeishu.Adapter, %{...}},
+  {{:github, "acme/api"}, BullXGithub.Adapter, %{...}}
+]
+```
+
+Setup and future control-plane screens do not write this tuple syntax directly. They submit a JSON-neutral adapter array to Gateway's configuration boundary, and Gateway owns converting it into the runtime tuple list before writing `bullx.gateway.adapters` to `app_configs`.
+
+Persisted JSON shape:
+
+```json
+[
+  {
+    "id": "feishu:ops-main",
+    "enabled": true,
+    "adapter": "feishu",
+    "channel_id": "ops-main",
+    "domain": "feishu",
+    "authn": {
+      "external_org_members": {
+        "enabled": true,
+        "tenant_key": "tenant_xxx"
+      }
+    },
+    "credentials": {
+      "app_id": "cli_xxx",
+      "app_secret": "xxx"
+    },
+    "advanced": {
+      "dedupe_ttl_ms": 300000,
+      "message_context_ttl_ms": 2592000000,
+      "card_action_dedupe_ttl_ms": 900000,
+      "inline_media_max_bytes": 524288,
+      "stream_update_interval_ms": 100,
+      "state_max_age_seconds": 600
+    }
+  }
+]
+```
+
+Rules:
+
+- `adapters` is an ordered array. Order is stable for human review and deterministic runtime conversion; it is not a delivery priority.
+- Each enabled entry must have a unique `{adapter, channel_id}` pair after normalization. `adapter` is a known catalog key, not arbitrary user-supplied module text. Gateway maps known keys to modules, e.g. `"feishu"` -> `BullXFeishu.Adapter`.
+- Disabled entries may remain in the array as drafts. Disabled entries are not converted to runtime specs, are not started under `AdapterSupervisor`, and do not need a successful connectivity check.
+- `config` is an adapter-owned object. Gateway validates only shared fields (`enabled`, `adapter`, `channel_id`) and delegates adapter-specific validation to the adapter's config normalizer and `connectivity_check/2`.
+- Nested objects and arrays are first-class. Setup must preserve them structurally; it must not flatten adapter-specific maps such as `credentials`, `advanced`, retry policy, or future adapter-owned objects into dotted string keys.
+- Secrets submitted through Setup are write-only from the UI perspective. A later edit view may show "configured" metadata, but it must not return the plaintext secret from the database.
+- The database row key is `bullx.gateway.adapters`, matching `config :bullx, :gateway, adapters`. The row value is an encoded representation that `BullX.Config.Gateway.AdapterList` can cast into the runtime list. Invalid database values fall through according to RFC 0001 rather than crashing boot.
+
+Before persistence, the control-plane flow is:
+
+```text
+1. Browser submits the adapter array draft.
+2. BullXWeb checks the setup gate/session and calls Gateway config validation.
+3. Gateway normalizes shared shape and adapter-specific config.
+4. Gateway calls adapter.connectivity_check({adapter, channel_id}, config) for every enabled entry.
+5. If any enabled entry fails, BullXWeb returns field/global errors and does not write `app_configs`.
+6. If all enabled entries pass, BullX.Config.put("bullx.gateway.adapters", encoded_runtime_value) writes the row and refreshes ETS.
+7. Adapter startup/reload is a separate operation; the connectivity check itself does not start children.
+```
+
+The successful check is tied to a fingerprint of the submitted enabled entry. If the operator changes any adapter entry field, including `adapter`, `channel_id`, or `enabled`, the previous success is stale and Setup must require another connectivity check before save. The browser may display this state, but it is not trusted: the save endpoint must verify a server-signed connectivity token or a server-side setup-session record for the recomputed fingerprint.
 
 ### 6.3 `BullXGateway.Inputs.*` — the seven canonical input structs
 
@@ -1020,7 +1124,7 @@ It solves the mechanical problem that "Plug consumes the body by default, leavin
 - **Gateway Core** (`BullXGateway` / `ControlPlane` / `Dispatcher` / `Adapter` behaviour / `Inputs.*` / signal modules / Security / Gating / Moderation behaviours) **does not depend on `Plug.Conn`** — the core runtime path contains no Plug types.
 - **`BullXGateway.Webhook.RawBodyReader`** is an **optional adapter-support helper** placed under the `BullXGateway.Webhook` subnamespace; adapters `use` / `import` it inside their own webhook listeners on demand.
 - **Compile-time dependency.** `plug` is declared as an **optional dependency** in `mix.exs` (`{:plug, "~> 1.14", optional: true}`). An adapter that uses `RawBodyReader` (or a host app like `BullXWeb`) declares `:plug` non-optional itself; environments without webhook adapters do not pull Plug into the compile closure.
-- **Applicable scope.** Useful only for HTTP-webhook adapters (GitHub / Shopify / Stripe / Feishu webhook listeners). Long-polling / WebSocket / queue-consumer adapters do not need this helper.
+- **Applicable scope.** Useful only for HTTP-webhook adapters (GitHub / Shopify / Stripe listeners). Long-polling / WebSocket / queue-consumer adapters do not need this helper.
 - If a project does not want the Gateway app to carry any Plug optional dependency, `RawBodyReader` may be moved into `BullXWeb` or into a separate `bullx_gateway_webhook` package. This RFC keeps it under the Gateway subnamespace by default because the implementation is tiny (a few dozen lines).
 
 **`RawBodyReader` (transport layer) vs. `Security.verify_sender` (platform layer).**
@@ -1195,6 +1299,9 @@ The egress steps run inside RFC 0003's `Dispatcher` / `ScopeWorker`. The ScopeWo
 
 ```elixir
 config :bullx, :gateway,
+  adapters: [
+    {{:feishu, "default"}, BullXFeishu.Adapter, %{...}}
+  ],
   gating: [
     gaters: [MyApp.TenantAllowlist, MyApp.RateLimit],
     gating_opts: [tenant_file: "priv/tenants.json"],
@@ -1216,6 +1323,10 @@ config :bullx, :gateway,
 ```
 
 Gateway reads these settings through `BullX.Config.Gateway`, not direct `Application.get_env/2` calls. Resolution priority for a Gateway setting is: code default -> application config -> OS env -> PostgreSQL override; per-call override (`publish_inbound(input, gating: [...])`) remains highest for that one call.
+
+`adapters` is the only Gateway setting in this RFC that is both complex and setup-writable. Application config may still supply the runtime tuple list directly. PostgreSQL setup writes use the JSON-neutral adapter array described in §6.2.1 and are decoded by `BullX.Config.Gateway.AdapterList`; subsystem code continues to consume only the runtime tuple shape returned by `BullX.Config.Gateway.adapters/0`.
+
+Operator-facing setup terminology intentionally differs from this storage key: one persisted adapter-array element is presented as a channel, while the adapter module/catalog entry is presented as a connector. This keeps UI language aligned with what the operator is adding without changing Gateway's runtime configuration contract.
 
 **Ordering within a stage:** list order is execution order; the first `:deny` short-circuits; moderator `:modify` cascades; `:flag` accumulates; `:reject` short-circuits.
 
@@ -1586,11 +1697,15 @@ A coding agent has completed this RFC when all of the following hold. The number
 
 ### 11.10 Boundary isolation
 
-35. Gateway Core code does not depend on `Plug.Conn`, does not define raw_body / query / remote_ip (`Webhook.RawBodyReader` is an optional helper, not part of the Adapter behaviour); GitHub / Shopify / Feishu webhook signature verification logic lives entirely inside the respective adapters.
+35. Gateway Core code does not depend on `Plug.Conn`, does not define raw_body / query / remote_ip (`Webhook.RawBodyReader` is an optional helper, not part of the Adapter behaviour); GitHub / Shopify webhook signature verification logic lives entirely inside the respective adapters.
 36. Webhook listeners are self-hosted by their adapters; concrete webhook implementation details belong to the adapter's RFC, not to the Gateway Core RFC.
 37. Gateway Core may use `BullX.Repo.*` (this RFC supersedes the original "no PostgreSQL" constraint) and may run PostgreSQL migrations; but **no `Oban.insert/1`** — Gateway does not schedule business-level jobs. (DLQ replay uses `BullXGateway.DLQ.ReplayWorker` partitioned workers, defined in RFC 0003, not Oban.)
 38. Any inbound signal's `extensions` contains non-empty `bullx_channel_adapter` / `bullx_channel_id`; `scope_id` / `thread_id` live in `data` and are not duplicated into `extensions`.
 39. **`subject` is human-readable only and not part of any routing path.** A signal whose `subject` has been deliberately scrambled (e.g. wrong adapter prefix, missing scope segment, garbled separator) must still be routed correctly by Runtime / subscribers consuming `extensions["bullx_channel_adapter"]`, `data["event"]["type"]`, `data["event"]["name"]`, and `data["refs"]`. No Gateway code path or documented consumer pattern parses `subject` for routing decisions.
+40. Every Gateway adapter implements `connectivity_check/2`, returns `{:ok, %{status: :ok, ...}}` only for credentials/endpoints that are usable by that adapter, and returns safe string-keyed error maps for failures.
+41. Setup/control-plane adapter config validation accepts nested objects and arrays, rejects duplicate enabled `{adapter, channel_id}` pairs, and converts valid enabled entries into the runtime `{{adapter, channel_id}, module, config}` list.
+42. `bullx.gateway.adapters` database overrides can represent the same adapter list as `config :bullx, :gateway, adapters`, and invalid database values fall through according to RFC 0001 without crashing boot.
+43. A save attempt that changes an enabled adapter after its last connectivity success is rejected until the changed adapter passes `connectivity_check/2` again.
 
 (Outbound boundary criteria belong to RFC 0003.)
 
@@ -1649,7 +1764,7 @@ This RFC is the result of aligning BullX Gateway with the jido official trio (`j
 | `jido_integration.ControlPlane` (durable run / attempt storage) | `BullXGateway.ControlPlane` + Store behaviour (§7.4, dedupe callbacks here and dead-letter callbacks in RFC 0003) — single PostgreSQL implementation; dev/test via Ecto sandbox |
 | `jido_integration.WebhookRouter.verification` | **Not adopted** — each adapter does its own verification; Gateway only ships `Webhook.RawBodyReader` (§6.6) |
 | `jido_integration.ConsumerProjection` generated Sensor / Plugin | **Not adopted** — BullX Runtime calls `Bus.subscribe` directly; no codegen |
-| `jido_messaging.Room / Participant / Thread / RoomBinding / RoutingPolicy` | **Not adopted** — flat `{channel, scope_id, thread_id, actor, refs}` covers the surveyed IM / webhook scenarios (Feishu streaming / recall / edit / reaction / card action / group reply / multi-room / multi-channel) |
+| `jido_messaging.Room / Participant / Thread / RoomBinding / RoutingPolicy` | **Not adopted** — flat `{channel, scope_id, thread_id, actor, refs}` covers the surveyed IM and webhook scenarios (Feishu streaming / recall / edit / reaction / card action / group reply / multi-room / multi-channel) |
 | `jido_chat.ModalSubmitEvent / ModalCloseEvent` | **Not adopted** — Slack-specific; modal submit is folded into `Action` (§4.3) |
 
 The spirit is consistent: **the carriage layer (including reliability) is small and stable, the domain layer is distributed and extensible, the policy layer is pluggable**. Differences in BullX Gateway:

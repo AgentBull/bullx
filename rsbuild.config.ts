@@ -12,6 +12,8 @@ const phoenixPort = parsePort(process.env.PORT || "4000", "PORT")
 const rsbuildPort = parsePort(process.env.RSBUILD_PORT || "5173", "RSBUILD_PORT")
 const rsbuildHost = "127.0.0.1"
 const rsbuildOrigin = `http://${rsbuildHost}:${rsbuildPort}`
+const rsbuildManifestWatchIgnore =
+  /[\\/](?:\.git|node_modules)[\\/]|[\\/]priv[\\/]static[\\/]\.rsbuild[\\/]manifest\.json$/
 
 function parsePort(raw, envVar) {
   const port = Number.parseInt(raw, 10)
@@ -110,6 +112,12 @@ export default defineConfig({
     },
   },
   tools: {
+    rspack(config) {
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: rsbuildManifestWatchIgnore,
+      }
+    },
     postcss(_options, { addPlugins }) {
       addPlugins(tailwindcss())
     },

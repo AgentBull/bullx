@@ -91,6 +91,9 @@ not_equal_to = "must be not equal to {$number}"
 [users]
 greeting = "Hello, {$name}!"
 
+[setup.bootstrap]
+activation_code_invalid = "Invalid or expired bootstrap activation code."
+
 [gateway.feishu.auth]
 activation_required = "Please activate this Feishu account by sending /preauth <code> in a private chat with the bot."
 activation_success = "Activation complete. This Feishu account is now linked to BullX."

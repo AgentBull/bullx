@@ -15,43 +15,19 @@ defmodule BullXAIAgent do
 
   ## Model Aliases
 
-  Use semantic model aliases instead of hardcoded model strings:
+  Use semantic model aliases instead of hardcoded model strings. The allowed
+  alias atoms are `:default`, `:fast`, `:heavy`, and `:compression`:
 
       BullXAIAgent.resolve_model(:fast)      # => "provider:fast-model"
-      BullXAIAgent.resolve_model(:capable)   # => "provider:capable-model"
-
-  Configure custom aliases in your config:
-
-      config :bullx, BullXAIAgent,
-        model_aliases: %{
-          fast: "provider:your-fast-model",
-          capable: "provider:your-capable-model"
-        }
-
-  Aliases can also point at full direct model specs when you need richer
-  ReqLLM metadata, such as a custom OpenAI-compatible `base_url`:
-
-      config :bullx, BullXAIAgent,
-        model_aliases: %{
-          capable: %{
-            provider: :openai,
-            id: "moonshotai.kimi-k2.5",
-            base_url: "https://proxy.example.com/v1"
-          }
-        }
+      BullXAIAgent.resolve_model(:heavy)     # => "provider:heavy-model"
 
   A broad list of provider/model IDs is available at: https://llmdb.xyz
 
   ## LLM Defaults
 
-  Configure small, role-based defaults for top-level generation helpers:
-
-      config :bullx, BullXAIAgent,
-        llm_defaults: %{
-          text: %{model: :fast, temperature: 0.2, max_tokens: 1024},
-          object: %{model: :thinking, temperature: 0.0, max_tokens: 1024},
-          stream: %{model: :fast, temperature: 0.2, max_tokens: 1024}
-        }
+  Top-level generation helpers use the same conservative defaults for text,
+  object, and stream calls: model `:default`, temperature `0.2`, max tokens
+  `1024`, and timeout `30_000`.
 
   Then call the facade directly:
 
@@ -80,15 +56,14 @@ defmodule BullXAIAgent do
   """
 
   alias Jido.Agent.Strategy.State, as: StratState
+  alias BullXAIAgent.LLM.ResolvedProvider
   alias BullXAIAgent.ModelAliases
-  alias BullXAIAgent.Reasoning.ReAct
+  alias BullXAIAgent.Reasoning.AgenticLoop
   alias BullXAIAgent.Turn
   alias ReqLLM.Context
 
-  @type model_alias ::
-          :fast | :capable | :thinking | :reasoning | :planning | :image | :embedding | atom()
-  @type model_spec :: String.t()
-  @type model_input :: model_alias() | ReqLLM.model_input()
+  @type model_alias :: :default | :fast | :heavy | :compression
+  @type model_input :: model_alias() | ResolvedProvider.t()
   @type llm_kind :: :text | :object | :stream
   @type llm_generation_opts :: %{
           optional(:model) => model_input(),
@@ -98,74 +73,24 @@ defmodule BullXAIAgent do
           optional(:timeout) => pos_integer()
         }
 
-  @default_llm_defaults %{
-    text: %{
-      model: :fast,
-      temperature: 0.2,
-      max_tokens: 1024,
-      timeout: 30_000
-    },
-    object: %{
-      model: :thinking,
-      temperature: 0.0,
-      max_tokens: 1024,
-      timeout: 30_000
-    },
-    stream: %{
-      model: :fast,
-      temperature: 0.2,
-      max_tokens: 1024,
-      timeout: 30_000
-    }
-  }
-
-  @doc false
-  @spec config(atom(), term()) :: term()
-  def config(key, default) when is_atom(key) do
-    :bullx
-    |> Application.get_env(__MODULE__, [])
-    |> get_config_value(key, default)
-  end
+  @llm_default_temperature 0.2
+  @llm_default_max_tokens 1024
+  @llm_default_timeout_ms 30_000
 
   @doc """
-  Returns all configured model aliases merged with defaults.
-
-  User overrides from `config :bullx, BullXAIAgent, model_aliases: ...` are merged on top of built-in defaults.
-
-  ## Examples
-
-      iex> aliases = BullXAIAgent.model_aliases()
-      iex> is_binary(aliases[:fast])
-      true
-  """
-  @spec model_aliases() :: %{model_alias() => ReqLLM.model_input()}
-  def model_aliases, do: ModelAliases.model_aliases()
-
-  @doc """
-  Returns configured LLM generation defaults merged with built-in defaults.
-
-  Configure under `config :bullx, BullXAIAgent, llm_defaults: ...`.
+  Returns LLM generation defaults for all top-level generation kinds.
   """
   @spec llm_defaults() :: %{llm_kind() => llm_generation_opts()}
   def llm_defaults do
-    configured = config(:llm_defaults, %{})
-
-    Map.merge(@default_llm_defaults, configured, fn _kind, default_opts, configured_opts ->
-      if is_map(configured_opts) do
-        Map.merge(default_opts, configured_opts)
-      else
-        default_opts
-      end
-    end)
+    Map.new([:text, :object, :stream], &{&1, llm_defaults(&1)})
   end
 
   @doc """
   Returns defaults for a specific generation kind: `:text`, `:object`, or `:stream`.
   """
   @spec llm_defaults(llm_kind()) :: llm_generation_opts()
-  def llm_defaults(kind) when kind in [:text, :object, :stream] do
-    Map.fetch!(llm_defaults(), kind)
-  end
+  def llm_defaults(kind) when kind in [:text, :object, :stream],
+    do: default_llm_generation_opts()
 
   def llm_defaults(kind) do
     raise ArgumentError,
@@ -174,53 +99,20 @@ defmodule BullXAIAgent do
   end
 
   @doc """
-  Resolves a model alias or passes through a direct ReqLLM model input.
+  Resolves a supported model alias to a DB-backed provider.
 
-  Model aliases are atoms like `:fast`, `:capable`, `:reasoning` that map
-  to full ReqLLM model specifications. Both alias values and direct model
-  inputs may be strings, ReqLLM tuples, inline maps, or `%LLMDB.Model{}`
-  structs.
-
-  ## Arguments
-
-    * `model` - Either a model alias atom or a direct ReqLLM model input
-
-  ## Returns
-
-    A resolved ReqLLM model input.
-
-  ## Examples
-
-      iex> String.contains?(BullXAIAgent.resolve_model(:fast), ":")
-      true
-
-      iex> BullXAIAgent.resolve_model("openai:gpt-4")
-      "openai:gpt-4"
-
-      iex> BullXAIAgent.resolve_model({:openai, "gpt-4.1", []})
-      {:openai, "gpt-4.1", []}
-
-      BullXAIAgent.resolve_model(:unknown_alias)
-      # raises ArgumentError with unknown alias message
+  Normal BullXAIAgent call sites use aliases. The only non-alias input accepted
+  here is a transient `%BullXAIAgent.LLM.ResolvedProvider{}` built by setup-time
+  provider validation before the submitted row is saved.
   """
-  @spec resolve_model(model_input()) :: ReqLLM.model_input()
+  @spec resolve_model(model_input()) :: ResolvedProvider.t()
+  def resolve_model(%ResolvedProvider{} = resolved), do: resolved
   def resolve_model(model) when is_atom(model), do: ModelAliases.resolve_model(model)
-  def resolve_model(model) when is_binary(model), do: model
-  def resolve_model(%LLMDB.Model{} = model), do: model
-  def resolve_model(model) when is_map(model) and not is_struct(model), do: model
-
-  def resolve_model({provider, model_id, provider_opts} = model)
-      when is_atom(provider) and is_binary(model_id) and is_list(provider_opts),
-      do: model
-
-  def resolve_model({provider, provider_opts} = model)
-      when is_atom(provider) and is_list(provider_opts),
-      do: model
 
   def resolve_model(model) do
     raise ArgumentError,
           "invalid model input #{inspect(model)}. " <>
-            "Expected a model alias, string spec, ReqLLM tuple spec, inline model map, or %LLMDB.Model{}."
+            "Expected one of :default, :fast, :heavy, :compression, or a setup-time %BullXAIAgent.LLM.ResolvedProvider{}."
   end
 
   @doc """
@@ -228,6 +120,7 @@ defmodule BullXAIAgent do
   """
   @spec model_label(model_input()) :: String.t()
   def model_label(model) when is_atom(model), do: model |> resolve_model() |> model_label()
+  def model_label(%ResolvedProvider{} = resolved), do: model_label(resolved.model)
   def model_label(model) when is_binary(model), do: model
 
   def model_label(model) do
@@ -242,6 +135,9 @@ defmodule BullXAIAgent do
   def model_fingerprint_segment(model) when is_atom(model),
     do: model |> resolve_model() |> model_fingerprint_segment()
 
+  def model_fingerprint_segment(%ResolvedProvider{} = resolved),
+    do: model_fingerprint_segment(resolved.model)
+
   def model_fingerprint_segment(model) when is_binary(model), do: model
 
   def model_fingerprint_segment(model) do
@@ -254,7 +150,8 @@ defmodule BullXAIAgent do
   @doc false
   @spec provider_opt_keys(model_input()) :: %{optional(String.t()) => atom()}
   def provider_opt_keys(model) do
-    with {:ok, %LLMDB.Model{} = normalized} <- ReqLLM.model(resolve_model(model)),
+    with %ResolvedProvider{} = resolved <- resolve_model(model),
+         {:ok, %LLMDB.Model{} = normalized} <- ReqLLM.model(resolved.model),
          provider when is_atom(provider) <- Map.get(normalized, :provider),
          {:ok, provider_mod} <- ReqLLM.provider(provider),
          true <- function_exported?(provider_mod, :provider_schema, 0) do
@@ -265,6 +162,8 @@ defmodule BullXAIAgent do
     else
       _ -> %{}
     end
+  rescue
+    ArgumentError -> %{}
   end
 
   @doc """
@@ -280,14 +179,15 @@ defmodule BullXAIAgent do
   @spec generate_text(term(), keyword()) :: {:ok, term()} | {:error, term()}
   def generate_text(input, opts \\ []) when is_list(opts) do
     defaults = llm_defaults(:text)
-    model = resolve_generation_model(opts, defaults)
     system_prompt = Keyword.get(opts, :system_prompt, defaults[:system_prompt])
 
-    with {:ok, req_context} <- normalize_context(input, system_prompt) do
+    with :ok <- reject_provider_config_opts(opts),
+         {:ok, resolved} <- resolve_generation_model(opts, defaults),
+         {:ok, req_context} <- normalize_context(input, system_prompt) do
       ReqLLM.Generation.generate_text(
-        model,
+        resolved.model,
         req_context.messages,
-        build_reqllm_opts(opts, defaults)
+        build_reqllm_opts(opts, defaults, resolved)
       )
     end
   end
@@ -300,15 +200,16 @@ defmodule BullXAIAgent do
   @spec generate_object(term(), term(), keyword()) :: {:ok, term()} | {:error, term()}
   def generate_object(input, object_schema, opts \\ []) when is_list(opts) do
     defaults = llm_defaults(:object)
-    model = resolve_generation_model(opts, defaults)
     system_prompt = Keyword.get(opts, :system_prompt, defaults[:system_prompt])
 
-    with {:ok, req_context} <- normalize_context(input, system_prompt) do
+    with :ok <- reject_provider_config_opts(opts),
+         {:ok, resolved} <- resolve_generation_model(opts, defaults),
+         {:ok, req_context} <- normalize_context(input, system_prompt) do
       ReqLLM.Generation.generate_object(
-        model,
+        resolved.model,
         req_context.messages,
         object_schema,
-        build_reqllm_opts(opts, defaults)
+        build_reqllm_opts(opts, defaults, resolved)
       )
     end
   end
@@ -321,11 +222,16 @@ defmodule BullXAIAgent do
   @spec stream_text(term(), keyword()) :: {:ok, term()} | {:error, term()}
   def stream_text(input, opts \\ []) when is_list(opts) do
     defaults = llm_defaults(:stream)
-    model = resolve_generation_model(opts, defaults)
     system_prompt = Keyword.get(opts, :system_prompt, defaults[:system_prompt])
 
-    with {:ok, req_context} <- normalize_context(input, system_prompt) do
-      ReqLLM.stream_text(model, req_context.messages, build_reqllm_opts(opts, defaults))
+    with :ok <- reject_provider_config_opts(opts),
+         {:ok, resolved} <- resolve_generation_model(opts, defaults),
+         {:ok, req_context} <- normalize_context(input, system_prompt) do
+      ReqLLM.stream_text(
+        resolved.model,
+        req_context.messages,
+        build_reqllm_opts(opts, defaults, resolved)
+      )
     end
   end
 
@@ -389,7 +295,9 @@ defmodule BullXAIAgent do
     timeout = Keyword.get(opts, :timeout, 5000)
 
     signal =
-      Jido.Signal.new!("ai.react.unregister_tool", %{tool_name: tool_name}, source: "/jido/ai")
+      Jido.Signal.new!("ai.agentic_loop.unregister_tool", %{tool_name: tool_name},
+        source: "/jido/ai"
+      )
 
     case Jido.AgentServer.call(agent_server, signal, timeout) do
       {:ok, agent} -> {:ok, agent}
@@ -398,7 +306,7 @@ defmodule BullXAIAgent do
   end
 
   @doc """
-  Updates the base ReAct system prompt for a running agent.
+  Updates the base AgenticLoop system prompt for a running agent.
 
   ## Options
 
@@ -411,7 +319,9 @@ defmodule BullXAIAgent do
     timeout = Keyword.get(opts, :timeout, 5000)
 
     signal =
-      Jido.Signal.new!("ai.react.set_system_prompt", %{system_prompt: prompt}, source: "/jido/ai")
+      Jido.Signal.new!("ai.agentic_loop.set_system_prompt", %{system_prompt: prompt},
+        source: "/jido/ai"
+      )
 
     case Jido.AgentServer.call(agent_server, signal, timeout) do
       {:ok, agent} -> {:ok, agent}
@@ -420,21 +330,21 @@ defmodule BullXAIAgent do
   end
 
   @doc """
-  Compatibility wrapper for `BullXAIAgent.Reasoning.ReAct.steer/3`.
+  Compatibility wrapper for `BullXAIAgent.Reasoning.AgenticLoop.steer/3`.
   """
   @spec steer(GenServer.server(), String.t(), keyword()) ::
           {:ok, Jido.Agent.t()} | {:error, term()}
   def steer(agent_server, content, opts \\ []) when is_binary(content) do
-    ReAct.steer(agent_server, content, Keyword.put_new(opts, :source, "/jido/ai"))
+    AgenticLoop.steer(agent_server, content, Keyword.put_new(opts, :source, "/jido/ai"))
   end
 
   @doc """
-  Compatibility wrapper for `BullXAIAgent.Reasoning.ReAct.inject/3`.
+  Compatibility wrapper for `BullXAIAgent.Reasoning.AgenticLoop.inject/3`.
   """
   @spec inject(GenServer.server(), String.t(), keyword()) ::
           {:ok, Jido.Agent.t()} | {:error, term()}
   def inject(agent_server, content, opts \\ []) when is_binary(content) do
-    ReAct.inject(agent_server, content, Keyword.put_new(opts, :source, "/jido/ai"))
+    AgenticLoop.inject(agent_server, content, Keyword.put_new(opts, :source, "/jido/ai"))
   end
 
   @doc """
@@ -604,7 +514,9 @@ defmodule BullXAIAgent do
     timeout = Keyword.get(opts, :timeout, 5000)
 
     signal =
-      Jido.Signal.new!("ai.react.register_tool", %{tool_module: tool_module}, source: "/jido/ai")
+      Jido.Signal.new!("ai.agentic_loop.register_tool", %{tool_module: tool_module},
+        source: "/jido/ai"
+      )
 
     case Jido.AgentServer.call(agent_server, signal, timeout) do
       {:ok, agent} -> {:ok, agent}
@@ -634,9 +546,24 @@ defmodule BullXAIAgent do
   # Private helpers for top-level LLM facades
 
   defp resolve_generation_model(opts, defaults) do
-    opts
-    |> Keyword.get(:model, defaults[:model] || :fast)
-    |> resolve_model()
+    model = Keyword.get(opts, :model, defaults[:model] || :default)
+
+    try do
+      case resolve_model(model) do
+        %ResolvedProvider{} = resolved -> {:ok, resolved}
+      end
+    rescue
+      ArgumentError -> {:error, {:invalid_model, model}}
+    end
+  end
+
+  defp default_llm_generation_opts do
+    %{
+      model: :default,
+      temperature: @llm_default_temperature,
+      max_tokens: @llm_default_max_tokens,
+      timeout: @llm_default_timeout_ms
+    }
   end
 
   defp list_tools_from_agent(%Jido.Agent{} = agent) do
@@ -653,7 +580,7 @@ defmodule BullXAIAgent do
     Context.normalize(input, system_prompt: system_prompt)
   end
 
-  defp build_reqllm_opts(opts, defaults) do
+  defp build_reqllm_opts(opts, defaults, %ResolvedProvider{} = resolved) do
     req_opts =
       []
       |> put_opt(:max_tokens, Keyword.get(opts, :max_tokens, defaults[:max_tokens]))
@@ -668,7 +595,43 @@ defmodule BullXAIAgent do
     req_opts
     |> Keyword.merge(passthrough_opts)
     |> merge_extra_opts(extra_opts)
+    |> Keyword.merge(resolved.opts)
   end
+
+  defp reject_provider_config_opts(opts) do
+    blocked =
+      opts
+      |> provider_config_key()
+      |> case do
+        nil ->
+          opts
+          |> Keyword.get(:opts, [])
+          |> provider_config_key()
+
+        key ->
+          key
+      end
+
+    case blocked do
+      nil -> :ok
+      key -> {:error, {:provider_config_must_use_catalog, key}}
+    end
+  end
+
+  defp provider_config_key(opts) when is_list(opts) do
+    Enum.find_value(opts, fn
+      {key, _value} when key in [:api_key, :base_url, :provider_options] -> key
+      _entry -> nil
+    end)
+  end
+
+  defp provider_config_key(opts) when is_map(opts) do
+    Enum.find_value([:api_key, :base_url, :provider_options], fn key ->
+      if Map.has_key?(opts, key) or Map.has_key?(opts, Atom.to_string(key)), do: key
+    end)
+  end
+
+  defp provider_config_key(_opts), do: nil
 
   defp put_opt(opts, _key, nil), do: opts
   defp put_opt(opts, key, value), do: Keyword.put(opts, key, value)
@@ -704,12 +667,4 @@ defmodule BullXAIAgent do
         model
     end
   end
-
-  defp get_config_value(config, key, default) when is_map(config),
-    do: Map.get(config, key, default)
-
-  defp get_config_value(config, key, default) when is_list(config),
-    do: Keyword.get(config, key, default)
-
-  defp get_config_value(_config, _key, default), do: default
 end

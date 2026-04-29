@@ -4,8 +4,7 @@ defmodule BullX.Config.Gateway.AdapterList do
   use Skogsra.Type
 
   @impl Skogsra.Type
-  def cast(value) when is_list(value), do: {:ok, value}
-  def cast(_value), do: :error
+  def cast(value), do: BullXGateway.AdapterConfig.cast(value)
 end
 
 defmodule BullX.Config.Gateway.KeywordList do

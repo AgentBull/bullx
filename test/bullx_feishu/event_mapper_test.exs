@@ -27,6 +27,7 @@ defmodule BullXFeishu.EventMapperTest do
     assert input.scope_id == "oc_1"
     assert input.actor.id == "feishu:ou_user"
     assert account_input.external_id == "feishu:ou_user"
+    assert account_input.metadata["tenant_key"] == "tenant_1"
     assert hd(input.content).body["text"] == "hello"
   end
 

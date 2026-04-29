@@ -1,27 +1,20 @@
 import React from "react"
-import axios from "axios"
 import { createInertiaApp } from "@inertiajs/react"
 import { createRoot } from "react-dom/client"
 import { BullXI18nextProvider } from "./i18n/provider"
 
-const csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
 const inertiaElement = document.getElementById("app")
 const inertiaPage = initialInertiaPage(inertiaElement)
-const pages = import.meta.webpackContext("./spas", {
+const pages = import.meta.webpackContext("./apps", {
   recursive: true,
   regExp: /\.jsx$/,
   mode: "lazy",
 })
 
-axios.defaults.xsrfHeaderName = "x-csrf-token"
-
-if (csrfToken) {
-  axios.defaults.headers.common["x-csrf-token"] = csrfToken
-}
-
 if (inertiaPage) {
   createInertiaApp({
     page: inertiaPage,
+    http: { xsrfHeaderName: "x-csrf-token" },
     title: title => title ? `${title} · BullX` : "BullX",
     resolve: async name => {
       const path = `./${name}.jsx`

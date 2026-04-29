@@ -1,14 +1,28 @@
 defmodule BullXWeb.SessionControllerTest do
   use BullXWeb.ConnCase, async: false
 
+  alias BullXAccounts.ActivationCode
   alias BullXAccounts.User
   alias BullXAccounts.UserChannelAuthCode
   alias BullXAccounts.UserChannelBinding
 
-  test "GET /sessions/new redirects to setup when no user exists", %{conn: conn} do
+  test "GET /sessions/new redirects to setup when users empty and bootstrap pending",
+       %{conn: conn} do
+    Repo.delete_all(ActivationCode)
+    {:ok, _result} = BullXAccounts.create_or_refresh_bootstrap_activation_code()
+
     conn = get(conn, ~p"/sessions/new")
 
     assert redirected_to(conn) == ~p"/setup"
+  end
+
+  test "GET /sessions/new renders the form when users empty but no bootstrap pending",
+       %{conn: conn} do
+    Repo.delete_all(ActivationCode)
+
+    conn = get(conn, ~p"/sessions/new")
+
+    assert html_response(conn, 200) =~ "sessions/New"
   end
 
   test "GET /sessions/new renders the sessions SPA for anonymous users", %{conn: conn} do

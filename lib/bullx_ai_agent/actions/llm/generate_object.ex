@@ -7,7 +7,7 @@ defmodule BullXAIAgent.Actions.LLM.GenerateObject do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:fast`, `:capable`) or direct spec (e.g., `"anthropic:claude-haiku-4-5"`)
+  * `model` (optional) - Model alias (e.g., `:default`, `:fast`) or direct spec (e.g., `"anthropic:claude-haiku-4-5"`)
   * `prompt` (required) - The prompt describing what object to generate
   * `object_schema` (required) - Zoi schema or NimbleOptions keyword list defining the expected structure
   * `system_prompt` (optional) - System prompt to guide the LLM's behavior
@@ -32,7 +32,7 @@ defmodule BullXAIAgent.Actions.LLM.GenerateObject do
 
       # With model and system prompt
       {:ok, result} = Jido.Exec.run(BullXAIAgent.Actions.LLM.GenerateObject, %{
-        model: :capable,
+        model: :default,
         prompt: "Generate a product review",
         object_schema: review_schema,
         system_prompt: "You are generating structured product review data.",
@@ -122,12 +122,12 @@ defmodule BullXAIAgent.Actions.LLM.GenerateObject do
 
     with {:ok, validated_params} <- Helpers.validate_and_sanitize_input(params),
          {:ok, _schema} <- validate_object_schema(validated_params[:object_schema]),
-         {:ok, model} <- Helpers.resolve_model(validated_params[:model], :fast),
+         {:ok, model} <- Helpers.resolve_model(validated_params[:model], :default),
          {:ok, req_context} <-
            build_messages(validated_params[:prompt], validated_params[:system_prompt]),
          opts = Helpers.build_opts(validated_params),
          {:ok, response} <-
-           ReqLLM.Generation.generate_object(
+           Helpers.generate_object(
              model,
              req_context.messages,
              validated_params[:object_schema],

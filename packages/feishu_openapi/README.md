@@ -471,6 +471,9 @@ plug FeishuOpenAPI.CardAction.Server, handler: card_handler
 ## WebSocket Event Push
 
 `FeishuOpenAPI.WS.Client` opens the Feishu/Lark WS event-push connection and forwards decoded event payloads into the same dispatcher model.
+The WS connection is authenticated during setup, so pushed event frames are
+dispatched as trusted decoded events and do not require webhook
+`Verification Token` or `Encrypt Key` handling.
 
 ```elixir
 {:ok, _pid} =

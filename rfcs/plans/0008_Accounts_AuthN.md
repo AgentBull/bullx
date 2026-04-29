@@ -20,7 +20,7 @@ Key decisions:
 - Gateway signals continue to carry channel-local actors only. Gateway does not add BullX user ids to inbound signals.
 - Runtime and other business code resolve a channel actor to a BullX user through BullXAccounts when identity is needed.
 - Web login uses standard Phoenix cookie sessions. JWTs are not an AuthN session mechanism in this RFC.
-- AuthZ is deliberately separate. This RFC does not create groups, group memberships, grants, Cedar policy evaluation, permission caches, or administrator membership assignment. Administrator onboarding belongs to setup or operator workflow.
+- AuthZ remains the authorization boundary. This RFC does not define permission grants, Cedar policy evaluation, or permission caches. Its only AuthZ handoff is bootstrap administrator membership: when `/preauth` consumes an activation code whose `metadata.bootstrap = true`, the newly created user is added to the built-in `admin` group. The trigger is the consumed activation code metadata, not "the first user" by row count.
 
 ### 1.1 Cleanup plan
 
@@ -40,12 +40,14 @@ Key decisions:
   - New configuration declarations under `BullX.Config.Accounts`.
   - New Web login controller, route, and SPA entry paths for provider login and channel-auth-code login.
   - New one-shot bootstrap activation-code check during application startup.
+  - Bootstrap `/preauth` consumption assigns the created user to the built-in `admin` group when the consumed activation code has `metadata.bootstrap = true`.
   - Gateway adapter command handlers call BullXAccounts for `/preauth <code>` and `/web_auth`.
 - **Invariants that must remain true**
   - Process-local AuthN state is reconstructible from PostgreSQL.
   - A banned user cannot log in through Web, resolve from Gateway binding, or run as a Runtime business identity.
   - Activation and channel-auth codes are stored only as hashes; plaintext codes are returned only at creation time.
   - Activation codes are retained after use for audit; user channel auth codes are deleted after successful consumption.
+  - Bootstrap administrator membership is granted only from a consumed activation code with `metadata.bootstrap = true`.
   - Gateway remains transport-oriented and does not become the owner of BullX user identity.
   - AuthZ remains a separate design boundary.
 - **Verification commands**
@@ -62,6 +64,7 @@ Key decisions:
 - Trusted channel profile matching on first contact.
 - Controlled user creation and binding with activation codes.
 - `/preauth <code>` handling for duplex Gateway channels.
+- Bootstrap administrator membership assignment based on consumed activation-code metadata.
 - Web control-plane login through Gateway login providers.
 - Web control-plane login through `/web_auth` channel auth codes.
 - Cookie session establishment for BullXWeb.
@@ -70,7 +73,7 @@ Key decisions:
 
 ### 2.2 Out of scope
 
-- Cedar policy evaluation, permission grants, permission caches, computed groups, and authorization APIs.
+- Cedar policy evaluation, permission grants, permission caches, computed groups, and general authorization APIs.
 - Generic OIDC, SAML, or OAuth provider support implemented by BullXAccounts itself.
 - A BullX-wide tenant model.
 - JWT-based browser sessions.
@@ -103,7 +106,9 @@ Phoenix-specific login controllers and plugs live under `lib/bullx_web/`. Gatewa
 
 `email`, `phone`, and `username` are global unique fields. They are nullable because not every channel provides every profile field. If present, `phone` is stored in E.164 format.
 
-The first successfully created user is only an AuthN user in this RFC. AuthN does not create an `admin` group, does not create group memberships, does not write authorization grants, and does not decide administrator membership. Administrator onboarding belongs to setup or operator workflow.
+The first successfully created user is not special by row count. Administrator onboarding is tied to the bootstrap activation code: if `/preauth` consumes an activation code whose `metadata.bootstrap = true`, BullXAccounts adds the newly created user to the built-in `admin` group in the same database transaction as code consumption, user creation, and first binding creation.
+
+Users created by automatic matching, provider login, unmatched auto-creation, or ordinary activation codes are not administrators by default. AuthN still does not write permission grants or define what `admin` authorizes; that remains the AuthZ policy boundary.
 
 ### 4.2 Gateway channel identity
 
@@ -139,7 +144,7 @@ The binding stores raw channel identity/profile metadata in `metadata`. This met
 
 ### 5.1 Trusted profile input
 
-On first contact, a channel may provide trusted profile fields such as email, phone, username, external org id, or display name. Not all channels can provide these fields. Adapter code must pass only trusted fields to BullXAccounts. Untrusted or user-editable channel display text must not be used as identity proof.
+On first contact, a channel may provide trusted profile fields such as email, phone, username, a tenant key, or display name. Not all channels can provide these fields. Adapter code must pass only trusted fields to BullXAccounts. Untrusted or user-editable channel display text must not be used as identity proof.
 
 The matching input is a normalized map, not a platform-specific payload:
 
@@ -152,10 +157,11 @@ The matching input is a normalized map, not a platform-specific payload:
     "email" => "user@example.com",
     "phone" => "+8613800000000",
     "username" => "alice",
-    "org_id" => "tenant_xxx",
     "display_name" => "Alice"
   },
-  metadata: %{}
+  metadata: %{
+    "tenant_key" => "tenant_xxx"
+  }
 }
 ```
 
@@ -174,7 +180,7 @@ Initial rule operations:
 
 - `equals_user_field`: compare a trusted source path to a unique user field such as `email`, `phone`, or `username`; result is `bind_existing_user`.
 - `email_domain_in`: allow automatic creation when a trusted email's domain is in an allowlist; result is `allow_create_user`.
-- `equals_any`: allow automatic creation when a trusted source path equals one of a configured set of values, for example `metadata.org_id`; result is `allow_create_user`.
+- `equals_any`: allow automatic creation when a trusted source path equals one of a configured set of values, for example `metadata.tenant_key`; result is `allow_create_user`.
 
 Example shape:
 
@@ -201,13 +207,16 @@ Example shape:
   {
     "result": "allow_create_user",
     "op": "equals_any",
-    "source_path": "metadata.org_id",
-    "values": ["tenant_xxx"]
+    "source_path": "metadata.tenant_key",
+    "values": ["tenant_xxx"],
+    "managed_by": "setup.gateway.external_org_members"
   }
 ]
 ```
 
-`source_path` reads from the normalized channel input. It is not limited to user fields; adapter-normalized metadata such as `metadata.org_id` is valid when the adapter marks it trusted.
+`source_path` reads from the normalized channel input. It is not limited to user fields; adapter-normalized metadata such as Feishu `metadata.tenant_key` is valid when the adapter marks it trusted.
+
+`managed_by` is optional metadata for control-plane-owned rules. The setup wizard uses `setup.gateway.external_org_members` when a connector capability allows an operator to authorize all members of a trusted external organization. The field must not affect rule evaluation; it exists so setup can update or remove only the rule it owns without clobbering operator-authored rules.
 
 ### 5.3 User creation policy
 
@@ -259,18 +268,31 @@ Activation-code consumption must not be used to attach a channel actor to an exi
 
 The code consumption, user creation, and binding creation must happen in one database transaction. Concurrent attempts to consume the same activation code must result in exactly one success.
 
+If the consumed activation code has `metadata.bootstrap = true`, the same transaction adds the created user to the built-in `admin` group. This is the only automatic administrator-membership path in this RFC. The decision is based on the consumed activation code row's metadata, not on whether the user happens to be the first row in `users`. If automatic matching succeeds before code verification, the activation code is not consumed and no bootstrap administrator membership is assigned, even if the submitted plaintext would have matched a bootstrap code.
+
 User-initiated approval requests are deferred. If real workflow pressure appears, introduce a separate `activation_requests` table and HITL queue in a later RFC.
 
 ### 5.5 Bootstrap activation code
 
-On application startup, BullXAccounts performs a one-shot bootstrap check with a supervised transient worker placed after `BullX.Repo` and `BullX.Config.Supervisor` in the application child list:
+The bootstrap activation code is the credential the operator uses to enter the Web setup wizard and later activate the first BullX user from a configured duplex channel. It is identified by the metadata marker `bootstrap = true` and is distinct from operator-issued activation codes:
 
-1. If the `users` table is empty and there is no valid unexpired activation code, create one activation code with `created_by_user_id = nil`.
-2. Log the plaintext activation code once through `Logger`.
-3. If a valid unexpired activation code already exists, do not create or log a replacement.
-4. If AuthN tables do not exist yet, skip the check and log a warning instead of crashing the application before migrations can run.
+- only the bootstrap worker creates or refreshes it
+- it must be reachable on every cold start until a configured adapter consumes it through `/preauth`
+- once consumed, it is never regenerated
 
-This worker exits normally after the check and is not a long-lived AuthN process. It is only a bootstrap escape hatch for a new deployment where no administrator exists yet.
+On application startup, BullXAccounts runs a one-shot bootstrap check via a supervised transient worker placed after `BullX.Repo` and `BullX.Config.Supervisor` in the application child list:
+
+1. If AuthN tables do not exist yet (migrations have not run), skip the check and log a warning instead of crashing.
+2. If the `users` table is non-empty, do nothing. The first user has been created and the bootstrap escape hatch is no longer needed.
+3. If a consumed activation code with `metadata.bootstrap = true` exists (i.e. `used_at IS NOT NULL`), do nothing. The bootstrap `/preauth` path has already consumed the bootstrap credential. Re-issuing a bootstrap code after consumption would defeat single-use semantics.
+4. Otherwise, the deployment still needs a fresh, usable bootstrap code:
+   - If a non-revoked, non-consumed activation code with `metadata.bootstrap = true` already exists, regenerate its plaintext, replace its `code_hash`, refresh `expires_at` from `accounts_activation_code_ttl_seconds`, and stamp `metadata.refreshed_at`. The row's `id` is preserved so audit references remain stable.
+   - If no such code exists, insert a new activation code with `created_by_user_id = nil` and `metadata = %{bootstrap: true}`.
+5. After a successful create or refresh, log the plaintext activation code exactly once through `Logger`. This is the only path that exposes the plaintext.
+
+The create/refresh step runs inside a single transaction protected by a PostgreSQL advisory transaction lock. Existing candidate rows are also read with `FOR UPDATE`. The worker re-checks `users` emptiness and consumed-bootstrap state after taking the advisory lock, so two nodes starting at once cannot fork the bootstrap code or create a fresh code after setup has completed.
+
+This worker exits normally after the check and is not a long-lived AuthN process. It is only a bootstrap escape hatch for a new deployment where no administrator exists yet. Operator-issued activation codes are unaffected by this flow; they do not carry the `bootstrap` marker and are neither refreshed nor consulted by the bootstrap worker.
 
 ## 6. Web Login
 
@@ -285,7 +307,7 @@ The adapter must normalize provider-returned identity data to the same channel i
 - `adapter`
 - `channel_id`
 - `external_id`
-- trusted profile fields such as `email`, `phone`, `username`, and adapter-specific org identifiers
+- trusted profile fields such as `email`, `phone`, `username`, and adapter-specific tenant identifiers
 
 BullXAccounts then applies the same matching rules used by IM-side identity handling:
 
@@ -296,7 +318,7 @@ BullXAccounts then applies the same matching rules used by IM-side identity hand
 
 Provider login changes only how the Web session is established; it does not change channel binding semantics and does not bypass the matching/activation policy.
 
-For Feishu enterprise self-built apps, IM activation through bot DM or group messages defaults to trusted profile matching such as org id, email suffix, and phone. Failed matching falls back to activation code. Feishu Web login may be offered at the same time, but its returned `external_id`, org id, email, and phone must normalize to the same semantics as the IM profile.
+For Feishu enterprise self-built apps, IM activation through bot DM or group messages defaults to trusted matching such as `tenant_key`, email suffix, and phone. Failed matching falls back to activation code. Feishu Web login may be offered at the same time, but its returned `external_id`, `tenant_key`, email, and phone must normalize to the same semantics as the IM profile.
 
 ### 6.2 User channel auth codes
 
@@ -316,7 +338,51 @@ Auth-code characters are uppercase letters and digits with visually confusing ch
 
 This RFC intentionally does not add rate limiting or attempt-count limiting. That omission is acceptable for the first implementation but should be revisited before exposing BullX to hostile public traffic.
 
-### 6.3 Web sessions
+### 6.3 Setup gate
+
+The Web setup wizard runs at `/setup` and is the gated entry point for first-user setup. Reaching the wizard takes two steps: the home page redirects an empty deployment to `/setup`, and `/setup` itself authorizes the browser by checking a Phoenix cookie session value against the bootstrap activation code that §5.5 keeps in the database.
+
+RFC 0009 refines what the wizard does after the gate: `/setup` configures Gateway adapters first, then instructs the operator to create the first owner account from the configured IM adapter with `/preauth <activation-code>`. In this RFC, "owner account" means the active AuthN user created by consuming the bootstrap code; that consumption adds the user to the built-in `admin` group because the code carries `metadata.bootstrap = true`. Permission grants remain RFC 0010 concerns. This RFC owns the bootstrap gate and activation-code verification; the Gateway adapter setup UI belongs to RFC 0009 and the Gateway adapter config contract belongs to RFC 0002.
+
+`PageController` redirects `/` to `/setup` only when both:
+
+- `users` is empty (`BullXAccounts.setup_required?/0`)
+- a non-revoked, non-consumed, non-expired `metadata.bootstrap = true` row exists in `activation_codes` (`BullXAccounts.bootstrap_activation_code_pending?/0`)
+
+If `users` is empty but no valid bootstrap row exists, `/` falls through to the existing `/sessions/new` path without special handling. That state is recoverable: the next application restart's bootstrap worker will refresh or create the row and log a fresh plaintext code (§5.5).
+
+`SetupController.show/2` handles `/setup`:
+
+- If `users` is non-empty, redirect to `/`.
+- Otherwise, read `:bootstrap_activation_code_hash` from the Phoenix cookie session and call `BullXAccounts.bootstrap_activation_code_valid_for_hash?/1`. The check is exact equality on `activation_codes.code_hash` plus the §5.5 validity predicate.
+  - Match: render the setup React SPA.
+  - No match (missing, revoked, consumed, expired, or replaced): clear the stale session key and redirect to `/setup/sessions/new`.
+
+`SetupSessionController` handles the gate at `/setup/sessions/new` and `/setup/sessions`:
+
+- `new/2` (GET) renders an Inertia view (`setup/sessions/New`) when `users` is empty; otherwise redirects to `/`. Props: `form_action`, `current_locale` (the active server locale string), `available_locales` (`BullX.I18n.available_locales/0` mapped to BCP 47 strings).
+- `create/2` (POST) accepts `bootstrap_code` and `locale`:
+  - `BullXAccounts.verify_bootstrap_activation_code/1` argon2-verifies the trimmed, upper-cased plaintext against the bounded set of currently valid bootstrap rows and returns the matched row's `code_hash` on success.
+  - On match: store `code_hash` in `:bootstrap_activation_code_hash`, apply the locale through §6.4, and redirect to `/setup`.
+  - On miss: redirect back to `/setup/sessions/new` with an error flash. No session value is written. No locale change is persisted.
+
+The cookie value is the argon2 PHC `code_hash`, not the plaintext. The hash is one-way, so an attacker who reads the signed cookie cannot recover the original code; the validity check stays driven by the `activation_codes` row, which can be revoked in a single update.
+
+The activation code is **not** consumed at the gate. Consumption (`used_at`) happens later when a configured duplex adapter handles `/preauth <activation-code>` and calls `BullXAccounts.consume_activation_code/2`. On consumption the existing `:bootstrap_activation_code_hash` value naturally stops matching (§5.5 single-use semantics), so setup transitions cleanly back to the normal control plane without an extra session reset.
+
+### 6.4 Setup-time locale override
+
+The setup gate exposes a language picker so an operator can complete bootstrap in their preferred language without first knowing how to set `bullx.i18n_default_locale`.
+
+- The dropdown is populated from `BullX.I18n.available_locales/0` (the loaded set scanned from `priv/locales/*.toml`); React hydrates the initial selection from the server-supplied `current_locale` prop.
+- Switching the dropdown only calls `i18next.changeLanguage/1` in the browser; **no server state is touched until a successful submit.**
+- On a successful `SetupSessionController.create/2`, the submitted `locale` is applied as follows:
+  - Reject `nil`, blank strings, or a value not in `BullX.I18n.available_locales/0` — log a `Logger.warning` with the available list and proceed without touching config. The bootstrap verification still succeeds and the operator still passes the gate.
+  - Otherwise, write through `BullX.Config.put("bullx.i18n_default_locale", locale)` and call `BullX.I18n.reload/0` so the change takes effect on the very next request (RFC 0001 storage precedence; RFC 0007 §5.3 reload semantics).
+
+This is the only place AuthN writes to `BullX.Config`. After bootstrap, locale changes go through the normal operator surface.
+
+### 6.5 Web sessions
 
 BullXWeb stores the logged-in user id in the Phoenix session. Every authenticated Web request reloads the user through BullXAccounts and rejects missing or banned users. Session state is not the source of truth.
 
@@ -432,7 +498,7 @@ Initial settings:
 - `accounts_activation_code_ttl_seconds`: positive integer. Default: `86400`.
 - `accounts_web_auth_code_ttl_seconds`: positive integer. Default: `300`.
 
-With the defaults, a fresh deployment is closed to arbitrary automatic user creation unless a trusted match rule is configured. The startup bootstrap check creates and logs one activation code so the first user can still activate.
+With the defaults, a fresh deployment is closed to arbitrary automatic user creation unless a trusted match rule is configured. The startup bootstrap check creates and logs one activation code so the setup operator can still activate through `/preauth`.
 
 All settings follow RFC 0001 resolution semantics: PostgreSQL override, OS environment, application config, then default. Invalid higher-priority values are skipped rather than treated as terminal failures.
 
@@ -476,7 +542,22 @@ Expected public functions:
         {:ok, BullXAccounts.User.t()}
         | {:error, :invalid_or_expired_code}
         | {:error, :user_banned}
+
+@spec create_or_refresh_bootstrap_activation_code() ::
+        {:ok, %{code: String.t(), activation_code: BullXAccounts.ActivationCode.t(), action: :created | :refreshed}}
+        | {:error, term()}
+
+@spec bootstrap_activation_code_pending?() :: boolean()
+
+@spec verify_bootstrap_activation_code(String.t()) ::
+        {:ok, String.t()} | {:error, :invalid_or_expired_code}
+
+@spec bootstrap_activation_code_valid_for_hash?(String.t() | nil) :: boolean()
 ```
+
+`create_or_refresh_bootstrap_activation_code/0` is called only by `BullXAccounts.Bootstrap`. It is exposed on the facade so the bootstrap worker does not reach into AuthN internals and so the same call is reusable from a future setup-wizard rotate-code action.
+
+`bootstrap_activation_code_pending?/0` is the home-page redirect predicate (§6.3). `verify_bootstrap_activation_code/1` is the gate-form verifier — it returns the matched row's `code_hash` so the controller can stash it in the cookie session without ever holding the plaintext beyond the request. `bootstrap_activation_code_valid_for_hash?/1` is the per-request authorization check at `/setup`; it does an exact-equality lookup on `activation_codes.code_hash` plus the §5.5 validity predicate, so a revoke or consume on the row immediately invalidates every browser holding the corresponding cookie.
 
 Schema modules:
 
@@ -511,6 +592,11 @@ Gateway adapters should expose `/preauth` and `/web_auth` as adapter command han
 - `lib/bullx_web/controllers/session_controller.ex`
 - `lib/bullx_web/controllers/session_html.ex`
 - `lib/bullx_web/controllers/session_html/new.html.heex`
+- `lib/bullx_web/controllers/setup_controller.ex`
+- `lib/bullx_web/controllers/setup_session_controller.ex`
+- `webui/src/apps/setup/sessions/New.jsx`
+- `priv/locales/client/en-US.toml` (add `web.setup.sessions.new.*` keys)
+- `priv/locales/client/zh-Hans-CN.toml` (mirror the new keys)
 - `lib/bullx_web/plugs/fetch_current_user.ex`
 - `lib/bullx_web/plugs/require_authenticated_user.ex`
 - `native/bullx_ext/src/phone.rs`
@@ -537,13 +623,13 @@ Modify `BullX.Application` only to add the one-shot transient `BullXAccounts.Boo
 1. Add migration and schemas for the four AuthN tables.
 2. Add `BullX.Config.Accounts` and casting/validation for AuthN settings.
 3. Add code generation and hashing helpers in `BullXAccounts.Code`.
-4. Add the startup bootstrap activation-code check.
+4. Add the startup bootstrap activation-code check that creates or refreshes the `metadata.bootstrap = true` row and logs its plaintext, gated on `users` being empty and no consumed bootstrap code existing.
 5. Implement binding resolution and banned-user checks.
 6. Implement short-circuit matching, including existing-user binding rules and automatic creation allow rules.
 7. Implement transactional match/create/bind behavior.
-8. Implement activation-code creation, revocation, and atomic consumption for new-user activation only.
+8. Implement activation-code creation, revocation, and atomic consumption for new-user activation only, including built-in `admin` group membership when the consumed code has `metadata.bootstrap = true`.
 9. Implement user channel auth-code issuance and consumption.
-10. Add Web session routes, controller actions, and plugs.
+10. Add Web session routes, controller actions, and plugs, including the setup gate routes (`/setup/sessions/new`, `/setup/sessions`) and the cookie-session bootstrap-hash check on `/setup`. The adapter-configuration wizard rendered after that gate is detailed in RFC 0009.
 11. Connect adapter command handlers to BullXAccounts after concrete adapters exist.
 12. Add tests for schemas, transactions, config fallback, Web sessions, bootstrap activation code, and command-facing AuthN behavior.
 
@@ -565,13 +651,25 @@ Tests must prove:
 12. Activation-code consumption is single-use under concurrent attempts.
 13. Revoked, expired, used, or unknown activation codes fail.
 14. Activation codes and user channel auth codes are hashed with `BullX.Ext.argon2_hash/1` and verified with `BullX.Ext.argon2_verify/2`.
-15. Startup creates and logs one activation code when both users and valid activation codes are absent.
-16. Provider login follows the same binding/creation/activation decisions as channel matching.
-17. `/web_auth` issuance fails for unbound or banned actors.
-18. User channel auth codes expire by TTL and are deleted on successful consumption.
-19. Web login stores only session identity and reloads the durable user on authenticated requests.
-20. Invalid email format and invalid phone number format are rejected at the changeset level; a valid phone is normalized to canonical E.164 before storage.
-21. `DELETE /sessions` clears the session and redirects to `/sessions/new`.
+15. Bootstrap administrator membership is assigned only when `/preauth` consumes an activation code with `metadata.bootstrap = true`; ordinary activation codes, automatic matching that avoids code consumption, and non-preauth creation paths do not assign it.
+16. Startup bootstrap is gated on the marker `metadata.bootstrap = true`:
+    - When `users` is empty and no consumed bootstrap code exists, startup creates a new bootstrap activation code, logs the plaintext, and persists `metadata.bootstrap = true`.
+    - When an unused bootstrap code already exists, startup refreshes it in place: a new plaintext is logged, `code_hash` and `expires_at` are updated, the row's `id` is preserved, and no second bootstrap row appears.
+    - Concurrent bootstrap create/refresh attempts serialize through a PostgreSQL advisory transaction lock and leave exactly one pending bootstrap row.
+    - When a consumed (`used_at IS NOT NULL`) bootstrap code exists, or `users` is non-empty, startup creates nothing and logs no plaintext.
+    - Operator-issued activation codes (without the bootstrap marker) do not satisfy or interfere with the bootstrap check.
+17. Provider login follows the same binding/creation/activation decisions as channel matching.
+18. `/web_auth` issuance fails for unbound or banned actors.
+19. User channel auth codes expire by TTL and are deleted on successful consumption.
+20. Web login stores only session identity and reloads the durable user on authenticated requests.
+21. Invalid email format and invalid phone number format are rejected at the changeset level; a valid phone is normalized to canonical E.164 before storage.
+22. `DELETE /sessions` clears the session and redirects to `/sessions/new`.
+23. The setup gate enforces both halves of the bootstrap flow:
+    - `GET /` redirects to `/setup` only when both `setup_required?/0` and `bootstrap_activation_code_pending?/0` are true; otherwise it falls through to the normal control-plane behavior.
+    - `GET /setup` renders the setup React SPA when `:bootstrap_activation_code_hash` in the cookie session matches a still-valid bootstrap row, and redirects to `/setup/sessions/new` after dropping the stale session key when it does not.
+    - `POST /setup/sessions` with a valid bootstrap code stores the matched row's `code_hash` in the cookie session and redirects to `/setup`. With an invalid code, it neither writes the cookie nor persists the locale, and re-renders the gate with an error flash.
+    - The setup gate does not consume the activation code. The code remains usable by `/preauth <activation-code>` in the configured IM adapter until that command succeeds or the code expires/revokes.
+    - A submitted locale is applied via `BullX.Config.put("bullx.i18n_default_locale", _)` plus `BullX.I18n.reload/0` only when it is in `BullX.I18n.available_locales/0`. Unsupported or blank values are silently ignored with a `Logger.warning` and do not block the bootstrap success path.
 
 ## 12. Acceptance Criteria
 
@@ -585,8 +683,10 @@ Tests must prove:
 8. Activation-code consumption is transactional and single-use.
 9. Activation-code and auth-code hashes use `BullX.Ext.argon2_hash/1`; submitted codes are checked with `BullX.Ext.argon2_verify/2`.
 10. Activation-code consumption creates a new user and first binding only; it never attaches a new channel actor to an existing user, and is not blocked by `accounts_authn_auto_create_users = false`.
-11. Provider login does not create a Web session when no existing binding, existing-user rule, or automatic creation rule matches.
-12. User channel auth-code consumption establishes a Phoenix cookie session and deletes the code.
-13. `users.status` is backed by the native PostgreSQL enum type `user_status`; email and phone fields are format-validated at the changeset layer, and phone values are normalized to canonical E.164 via `BullX.Ext.phone_normalize_e164/1` before storage.
-14. AuthZ implementation remains completely outside this RFC.
-15. `mix precommit` passes.
+11. Consuming an activation code with `metadata.bootstrap = true` through `/preauth` adds the newly created user to the built-in `admin` group; ordinary codes and automatic matching paths do not.
+12. Provider login does not create a Web session when no existing binding, existing-user rule, or automatic creation rule matches.
+13. User channel auth-code consumption establishes a Phoenix cookie session and deletes the code.
+14. `users.status` is backed by the native PostgreSQL enum type `user_status`; email and phone fields are format-validated at the changeset layer, and phone values are normalized to canonical E.164 via `BullX.Ext.phone_normalize_e164/1` before storage.
+15. The startup bootstrap worker creates a `metadata.bootstrap = true` activation code on a fresh deployment, refreshes the existing unused bootstrap code in place across restarts, and stops touching the bootstrap row once it has been consumed or once any user exists. The plaintext is logged exactly when a bootstrap row is created or refreshed, and never otherwise.
+16. AuthZ permission-grant policy remains outside this RFC.
+17. `mix precommit` passes.

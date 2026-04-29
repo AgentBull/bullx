@@ -8,7 +8,7 @@ defmodule BullXAIAgent.Actions.LLM.Complete do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:fast`, `:capable`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:default`, `:fast`) or direct spec
   * `prompt` (required) - The text prompt to complete
   * `max_tokens` (optional) - Maximum tokens to generate (default: `1024`)
   * `temperature` (optional) - Sampling temperature 0.0-2.0 (default: `0.7`)
@@ -23,7 +23,7 @@ defmodule BullXAIAgent.Actions.LLM.Complete do
 
       # With custom settings
       {:ok, result} = Jido.Exec.run(BullXAIAgent.Actions.LLM.Complete, %{
-        model: :capable,
+        model: :heavy,
         prompt: "Elixir is a functional programming language",
         max_tokens: 500,
         temperature: 0.5
@@ -98,7 +98,7 @@ defmodule BullXAIAgent.Actions.LLM.Complete do
          {:ok, model} <- Helpers.resolve_model(validated_params[:model], :fast),
          {:ok, req_context} <- build_messages(validated_params[:prompt]),
          opts = Helpers.build_opts(validated_params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       duration_native = System.monotonic_time() - start_time
 
       measurements = %{

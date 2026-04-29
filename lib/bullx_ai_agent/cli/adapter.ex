@@ -8,19 +8,12 @@ defmodule BullXAIAgent.CLI.Adapter do
   - Wait for completion
   - Extract the result
 
-  This keeps the Mix task clean and allows new agent types (CoT, ToT, etc.)
-  to be added by implementing this behavior.
+  This keeps the Mix task clean while the AIAgent subsystem exposes a single
+  built-in strategy.
 
   ## Built-in Adapters
 
-  - `BullXAIAgent.Reasoning.ReAct.CLIAdapter` - For `BullXAIAgent.Agent` modules
-  - `BullXAIAgent.Reasoning.AlgorithmOfThoughts.CLIAdapter` - For `BullXAIAgent.AoTAgent` agents
-  - `BullXAIAgent.Reasoning.ChainOfDraft.CLIAdapter` - For Chain-of-Draft agents
-  - `BullXAIAgent.Reasoning.TreeOfThoughts.CLIAdapter` - For Tree-of-Thoughts agents
-  - `BullXAIAgent.Reasoning.ChainOfThought.CLIAdapter` - For Chain-of-Thought agents
-  - `BullXAIAgent.Reasoning.GraphOfThoughts.CLIAdapter` - For Graph-of-Thoughts agents
-  - `BullXAIAgent.Reasoning.TRM.CLIAdapter` - For TRM (Tiny-Recursive-Model) agents
-  - `BullXAIAgent.Reasoning.Adaptive.CLIAdapter` - For Adaptive strategy agents (auto-selects reasoning approach)
+  - `BullXAIAgent.Reasoning.AgenticLoop.CLIAdapter` - For `BullXAIAgent.Agent` modules
 
   ## Custom Agents
 
@@ -29,22 +22,15 @@ defmodule BullXAIAgent.CLI.Adapter do
       defmodule MyApp.CustomAgent do
         use BullXAIAgent.Agent, ...
 
-        def cli_adapter, do: BullXAIAgent.Reasoning.ReAct.CLIAdapter
+        def cli_adapter, do: BullXAIAgent.Reasoning.AgenticLoop.CLIAdapter
       end
 
-  If not implemented, the CLI will infer the adapter from `--type` or default to ReAct.
+  If not implemented, the CLI defaults to AgenticLoop.
   """
 
-  @supported_types ~w(react aot cod cot tot got trm adaptive)
+  @supported_types ~w(agentic_loop)
   @type_to_adapter %{
-    "react" => BullXAIAgent.Reasoning.ReAct.CLIAdapter,
-    "aot" => BullXAIAgent.Reasoning.AlgorithmOfThoughts.CLIAdapter,
-    "cod" => BullXAIAgent.Reasoning.ChainOfDraft.CLIAdapter,
-    "cot" => BullXAIAgent.Reasoning.ChainOfThought.CLIAdapter,
-    "tot" => BullXAIAgent.Reasoning.TreeOfThoughts.CLIAdapter,
-    "got" => BullXAIAgent.Reasoning.GraphOfThoughts.CLIAdapter,
-    "trm" => BullXAIAgent.Reasoning.TRM.CLIAdapter,
-    "adaptive" => BullXAIAgent.Reasoning.Adaptive.CLIAdapter
+    "agentic_loop" => BullXAIAgent.Reasoning.AgenticLoop.CLIAdapter
   }
 
   @type config :: map()
@@ -90,7 +76,7 @@ defmodule BullXAIAgent.CLI.Adapter do
         {:ok, agent_module.cli_adapter()}
 
       true ->
-        resolve_type(type || "react")
+        resolve_type(type || "agentic_loop")
     end
   end
 

@@ -1,8 +1,8 @@
 defmodule BullXAIAgent.PendingInputServer do
   @moduledoc """
-  Per-run FIFO queue for ReAct steering input.
+  Per-run FIFO queue for AgenticLoop steering input.
 
-  The server is owned by the parent ReAct strategy process for the active run.
+  The server is owned by the parent AgenticLoop strategy process for the active run.
   Inputs are queued synchronously, drained by the runtime before LLM turns,
   and the queue can be sealed at terminal boundaries to reject late arrivals.
   """

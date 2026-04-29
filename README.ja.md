@@ -79,7 +79,7 @@ bun run lint
 
 ## Rsbuild アセットビルド
 
-React/Inertia のエントリーポイントは `webui/src/app.jsx` にあり、各 SPA ページは `webui/src/spas/` 以下にあります。デプロイ可能なアセットを作るとき、Rsbuild は `priv/static/assets/.rsbuild/manifest.json` を書き出し、開発環境以外では Phoenix がその manifest から script と stylesheet を解決します。
+React/Inertia のエントリーポイントは `webui/src/app.jsx` にあり、各 SPA ページは `webui/src/apps/` 以下にあります。デプロイ可能なアセットを作るとき、Rsbuild は `priv/static/assets/.rsbuild/manifest.json` を書き出し、開発環境以外では Phoenix がその manifest から script と stylesheet を解決します。
 Bun はリポジトリルートから実行します。Rsbuild はアプリケーションソースに `webui/src/`、Phoenix CSS エントリーに `assets/css/` を使います。
 
 ```sh

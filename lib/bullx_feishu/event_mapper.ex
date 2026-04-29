@@ -341,14 +341,12 @@ defmodule BullXFeishu.EventMapper do
     |> maybe_put("open_id", ids["open_id"])
     |> maybe_put("union_id", ids["union_id"])
     |> maybe_put("user_id", ids["user_id"])
-    |> maybe_put("tenant_key", first_string(sender, ["tenant_key"]))
   end
 
   defp profile_from_card(%CardAction{} = action) do
     %{}
     |> maybe_put("open_id", action.open_id)
     |> maybe_put("user_id", action.user_id)
-    |> maybe_put("tenant_key", action.tenant_key)
   end
 
   defp account_input(%Config{} = config, external_id, profile, env) do
@@ -357,12 +355,14 @@ defmodule BullXFeishu.EventMapper do
       channel_id: config.channel_id,
       external_id: external_id,
       profile: profile,
-      metadata: %{
-        "source" => "feishu_im",
-        "tenant_key" => Map.get(env, :tenant_key),
-        "chat_id" => Map.get(env, :chat_id),
-        "chat_type" => Map.get(env, :chat_type)
-      }
+      metadata:
+        %{
+          "source" => "feishu_im",
+          "tenant_key" => Map.get(env, :tenant_key),
+          "chat_id" => Map.get(env, :chat_id),
+          "chat_type" => Map.get(env, :chat_type)
+        }
+        |> reject_nil_values()
     }
   end
 

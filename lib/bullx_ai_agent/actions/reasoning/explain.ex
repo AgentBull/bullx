@@ -7,7 +7,7 @@ defmodule BullXAIAgent.Actions.Reasoning.Explain do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:reasoning`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:heavy`) or direct spec
   * `topic` (required) - The topic to explain
   * `detail_level` (optional) - Detail level: `:basic`, `:intermediate`, `:advanced`
   * `audience` (optional) - Target audience description
@@ -48,7 +48,7 @@ defmodule BullXAIAgent.Actions.Reasoning.Explain do
     schema:
       Zoi.object(%{
         model:
-          Zoi.any(description: "Model alias (e.g., :reasoning) or direct model spec string")
+          Zoi.any(description: "Model alias (e.g., :heavy) or direct model spec string")
           |> Zoi.optional(),
         topic: Zoi.string(description: "The topic to explain"),
         detail_level:
@@ -135,16 +135,16 @@ defmodule BullXAIAgent.Actions.Reasoning.Explain do
          {:ok, validated_params} <- validate_and_sanitize_params(params),
          {:ok, req_context} <- build_explanation_messages(validated_params),
          opts = build_opts(validated_params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       {:ok, format_result(response, model, validated_params[:detail_level])}
     end
   end
 
   # Private Functions
 
-  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:reasoning)}
+  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:heavy)}
   defp resolve_model(model) when is_atom(model), do: {:ok, BullXAIAgent.resolve_model(model)}
-  defp resolve_model(model) when is_binary(model), do: {:ok, model}
+  defp resolve_model(_model), do: {:error, :invalid_model_format}
 
   defp build_explanation_messages(params) do
     system_prompt =

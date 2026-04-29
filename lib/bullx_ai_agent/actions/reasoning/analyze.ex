@@ -7,7 +7,7 @@ defmodule BullXAIAgent.Actions.Reasoning.Analyze do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:reasoning`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:heavy`) or direct spec
   * `input` (required) - The text or data to analyze
   * `analysis_type` (optional) - Type of analysis: `:sentiment`, `:topics`, `:entities`, `:summary`, `:custom`
   * `custom_prompt` (optional) - Custom analysis instructions (when `analysis_type: :custom`)
@@ -46,7 +46,7 @@ defmodule BullXAIAgent.Actions.Reasoning.Analyze do
     schema:
       Zoi.object(%{
         model:
-          Zoi.any(description: "Model alias (e.g., :reasoning) or direct model spec string")
+          Zoi.any(description: "Model alias (e.g., :heavy) or direct model spec string")
           |> Zoi.optional(),
         input: Zoi.string(description: "The text or data to analyze"),
         analysis_type:
@@ -136,16 +136,16 @@ defmodule BullXAIAgent.Actions.Reasoning.Analyze do
          {:ok, validated_params} <- validate_and_sanitize_params(params),
          {:ok, req_context} <- build_analysis_messages(validated_params),
          opts = build_opts(validated_params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       {:ok, format_result(response, model, validated_params[:analysis_type])}
     end
   end
 
   # Private Functions
 
-  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:reasoning)}
+  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:heavy)}
   defp resolve_model(model) when is_atom(model), do: {:ok, BullXAIAgent.resolve_model(model)}
-  defp resolve_model(model) when is_binary(model), do: {:ok, model}
+  defp resolve_model(_model), do: {:error, :invalid_model_format}
 
   defp build_analysis_messages(params) do
     system_prompt = build_analysis_system_prompt(params[:analysis_type], params[:custom_prompt])

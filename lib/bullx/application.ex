@@ -17,6 +17,7 @@ defmodule BullX.Application do
       BullX.I18n.Catalog,
       {DNSCluster, query: Application.get_env(:bullx, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: BullX.PubSub},
+      BullXAIAgent.Supervisor,
       BullXGateway.CoreSupervisor,
       BullX.Skills.Supervisor,
       BullXBrain.Supervisor,

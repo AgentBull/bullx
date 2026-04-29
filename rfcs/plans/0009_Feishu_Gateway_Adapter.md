@@ -11,7 +11,7 @@ Implement Feishu as a first-class Gateway channel adapter for BullX.
 
 The adapter handles:
 
-- Feishu/Lark inbound events over WebSocket and optional webhook callbacks.
+- Feishu/Lark inbound events over WebSocket.
 - Feishu card action callbacks.
 - Feishu outbound send, edit, and streaming-card delivery through the Gateway delivery contract.
 - Feishu-specific `/preauth` and `/web_auth` account linking commands.
@@ -29,7 +29,7 @@ The adapter uses the existing SDK in `packages/feishu_openapi`. No new dependenc
 - Do not persist Feishu access tokens or refresh tokens.
 - Do not introduce a separate OTP application.
 - Do not make Feishu message media storage a new durable subsystem.
-- Do not support marketplace tenant lifecycle management beyond SDK token handling and event normalization.
+- Only self-built Feishu/Lark apps are in scope for BullX's Feishu adapter configuration.
 
 ## 3. Cleanup Plan
 
@@ -56,6 +56,8 @@ The implementation must avoid compatibility shims such as `BullXGateway.Adapters
 
 - Add a new top-level channel adapter namespace: `BullXFeishu.*`.
 - Add BullXWeb routes and a thin Feishu login controller for OIDC browser login.
+- Extend the existing setup route (`/setup`) to use `webui/src/apps/setup/App.jsx` as the Inertia React wizard after `/setup/sessions/new` has validated the bootstrap activation code.
+- Add setup/control-plane endpoints for Feishu adapter draft validation, connectivity testing, and saving the Gateway adapter array to `bullx.gateway.adapters`.
 - Add Feishu translation keys to `priv/locales/en-US.toml` and `priv/locales/zh-Hans-CN.toml`.
 - Add Feishu adapter configuration examples without changing Gateway core configuration shape.
 
@@ -73,6 +75,9 @@ The implementation must avoid compatibility shims such as `BullXGateway.Adapters
 - Feishu `:stream` DLQ replay with absent stream content returns `{:error, %{"kind" => "payload", ...}}`.
 - No Feishu user token is persisted by the first implementation.
 - Manual local runs must be observable from normal logs: startup/connection, inbound mapping, direct-command handling, publish result, and delivery enqueue/failure all emit structured log lines with safe metadata.
+- Feishu adapter setup must not persist until `BullXFeishu.Adapter.connectivity_check/2` succeeds for the exact submitted config.
+- The setup wizard persists Gateway adapter configuration only; owner user creation happens later through Feishu `/preauth <activation-code>`.
+- The post-save setup instruction page must not expose secrets and should refer to the bootstrap activation code the operator already used to enter setup rather than trying to recover plaintext from the database.
 
 ### 3.5 Verification command
 
@@ -80,6 +85,7 @@ Run:
 
 ```bash
 mix test test/bullx_feishu test/bullx_web/controllers/feishu_auth_controller_test.exs test/bullx_accounts/authn_test.exs
+mix test test/bullx_web/controllers/setup_gateway_controller_test.exs
 mix precommit
 ```
 
@@ -121,7 +127,6 @@ lib/bullx_feishu/channel.ex
 lib/bullx_feishu/config.ex
 lib/bullx_feishu/cache.ex
 lib/bullx_feishu/event_listener.ex
-lib/bullx_feishu/webhook_plug.ex
 lib/bullx_feishu/event_mapper.ex
 lib/bullx_feishu/content_mapper.ex
 lib/bullx_feishu/direct_command.ex
@@ -137,8 +142,6 @@ lib/bullx_feishu/error.ex
 
 `BullXFeishu.EventListener` owns the small account-gate call before publishing. A separate account-gate module is not needed.
 
-`BullXFeishu.WebhookPlug` handles both event callbacks and card action callbacks by path. It must preserve raw request bytes before JSON parsing so SDK verification receives the exact signed body.
-
 `BullXFeishu.StreamingCard` remains separate because it has real state: card ID, message ID, accumulated text, sequence numbers, throttling, and finalization.
 
 There is no `BullXFeishu.API` wrapper in the first implementation. Adapter modules call `FeishuOpenAPI.get/3`, `post/3`, `patch/3`, `upload/3`, and `download/3` directly, with `BullXFeishu.Error` handling error normalization. Tests use the SDK's Req-based test support and local fake clients where needed.
@@ -149,16 +152,28 @@ Create:
 
 ```text
 lib/bullx_web/controllers/feishu_auth_controller.ex
+lib/bullx_web/controllers/setup_gateway_controller.ex
 test/bullx_web/controllers/feishu_auth_controller_test.exs
+test/bullx_web/controllers/setup_gateway_controller_test.exs
 ```
 
 Modify:
 
 ```text
 lib/bullx_web/router.ex
+lib/bullx_web/controllers/setup_controller.ex
+webui/src/apps/setup/App.jsx
 ```
 
 The controller remains thin. Feishu URL construction, token exchange, userinfo fetching, and profile normalization live in `BullXFeishu.SSO`.
+
+`SetupGatewayController` is not Feishu business logic. It is a setup/control-plane bridge that:
+
+- requires the same bootstrap setup session as `SetupController.show/2`;
+- accepts adapter-array drafts from the Inertia setup app;
+- calls Gateway's adapter config validation and Feishu `connectivity_check/2`;
+- saves only after all enabled adapters have fresh successful checks;
+- redirects the browser to the post-save IM activation instructions page.
 
 ### 5.3 Locale Files
 
@@ -167,9 +182,11 @@ Modify:
 ```text
 priv/locales/en-US.toml
 priv/locales/zh-Hans-CN.toml
+priv/locales/client/en-US.toml
+priv/locales/client/zh-Hans-CN.toml
 ```
 
-Add keys under `gateway.feishu.*`.
+Add server-side keys under `gateway.feishu.*` and client-side setup wizard keys under `web.setup.*`.
 
 ## 6. Configuration
 
@@ -185,10 +202,6 @@ config :bullx, :gateway,
        app_id: {:system, "BULLX_FEISHU_APP_ID"},
        app_secret: {:system, "BULLX_FEISHU_APP_SECRET"},
        domain: :feishu,
-       app_type: :self_built,
-       connection_mode: :websocket,
-       verification_token: {:system, "BULLX_FEISHU_VERIFICATION_TOKEN"},
-       encrypt_key: {:system, "BULLX_FEISHU_ENCRYPT_KEY"},
        bot_open_id: {:system, "BULLX_FEISHU_BOT_OPEN_ID"},
        dedupe_ttl_ms: :timer.minutes(5),
        message_context_ttl_ms: :timer.hours(24) * 30,
@@ -211,44 +224,138 @@ Required keys:
 
 Recommended keys:
 
-- `:verification_token`
-- `:encrypt_key`
 - `:bot_open_id`
 - `:sso.redirect_uri` when web login is enabled
+
+BullX uses Feishu/Lark long-connection WebSocket event push only. The official
+long-connection mode performs transport encryption and authentication inside the
+connection, so BullX does not collect or use webhook `Verification Token` or
+`Encrypt Key` values.
 
 Optional keys:
 
 - `:domain`: `:feishu` or `:lark`, default `:feishu`.
-- `:app_type`: `:self_built` or `:marketplace`, default `:self_built`.
-- `:connection_mode`: `:websocket` or `:webhook`, default `:websocket`.
-- `:webhook`: `%{scheme:, host:, port:, event_path:, card_action_path:}` for adapter-owned webhook listeners.
 - `:dedupe_ttl_ms`: read by Gateway through `AdapterRegistry` after the adapter config is registered; default `5 minutes`.
 - `:message_context_ttl_ms`: adapter-local recall/reaction context cache, default `30 days`.
 - `:card_action_dedupe_ttl_ms`: adapter-local card action dedupe, default `15 minutes`.
 - `:inline_media_max_bytes`: maximum media bytes embedded as a `data:` URI, default `512 KiB`.
 - `:stream_update_interval_ms`: streaming card throttle interval, default `100 ms`.
-- `:status_reactions`: optional best-effort reaction UX config, default `%{enabled: true, in_progress: "Typing", failure: "CrossMark"}`.
+- `:state_max_age_seconds`: direct-command state max age, default `600 seconds`.
 
 Configuration resolution must use the existing BullX config style, including system env indirection. Secrets must not be logged.
+
+### 6.1 Setup persisted shape
+
+When `/setup` saves Feishu from the React wizard, the browser submits the RFC 0002 JSON-neutral adapter-array shape instead of Elixir tuples:
+
+```json
+[
+  {
+    "id": "feishu:default",
+    "enabled": true,
+    "adapter": "feishu",
+    "channel_id": "ops-main",
+    "domain": "feishu",
+    "authn": {
+      "external_org_members": {
+        "enabled": true,
+        "tenant_key": "tenant_xxx"
+      }
+    },
+    "credentials": {
+      "app_id": "cli_xxx",
+      "app_secret": "xxx"
+    },
+    "advanced": {
+      "dedupe_ttl_ms": 300000,
+      "message_context_ttl_ms": 2592000000,
+      "card_action_dedupe_ttl_ms": 900000,
+      "inline_media_max_bytes": 524288,
+      "stream_update_interval_ms": 100,
+      "state_max_age_seconds": 600
+    }
+  }
+]
+```
+
+Gateway converts this to:
+
+```elixir
+{{:feishu, "ops-main"}, BullXFeishu.Adapter,
+ %{
+   app_id: "cli_xxx",
+   app_secret: "xxx",
+   domain: :feishu,
+   dedupe_ttl_ms: 300000,
+   message_context_ttl_ms: 2592000000,
+   card_action_dedupe_ttl_ms: 900000,
+   inline_media_max_bytes: 524288,
+   stream_update_interval_ms: 100,
+   state_max_age_seconds: 600
+ }}
+```
+
+The persisted row is `app_configs.key = "bullx.gateway.adapters"`. The setup implementation must preserve nested objects and arrays exactly enough for `BullX.Config.Gateway.adapters/0` to reconstruct the runtime tuple list after the ETS refresh.
+
+The adapter catalog exposes Feishu setup documentation through the required `BullXGateway.Adapter.config_docs/0` callback:
+
+```elixir
+%{
+  "en-US" => "https://github.com/AgentBull/bullx/blob/main/docs/channels/feishu.en-US.md",
+  "zh-Hans-CN" => "https://github.com/AgentBull/bullx/blob/main/docs/channels/feishu.zh-Hans-CN.md"
+}
+```
+
+Setup uses the application locale and falls back to `"en-US"` when a locale-specific URL is absent.
+
+### 6.2 Feishu connectivity check
+
+`BullXFeishu.Adapter.connectivity_check/2` implements the required Gateway adapter connectivity callback.
+
+Minimum behavior:
+
+1. Normalize the submitted config with `BullXFeishu.Config.normalize/2`.
+2. Build a `FeishuOpenAPI.Client` with the submitted `app_id`, `app_secret`, and `domain`.
+3. Verify app credentials by obtaining or forcing a tenant access token through the SDK auth layer.
+4. Return only safe metadata: adapter, channel ID, app ID, domain, transport, capabilities, credential expiry, and local transport preflight status.
+5. Do not start the long-lived `FeishuOpenAPI.WS.Client` during connectivity checks.
+
+Success shape:
+
+```elixir
+{:ok,
+ %{
+   status: :ok,
+   adapter: :feishu,
+   channel_id: "default",
+   capabilities: [:send, :edit, :stream, :cards, :threads, :reactions],
+   details: %{"domain" => "feishu", "transport" => "websocket"}
+ }}
+```
+
+Failure shape:
+
+```elixir
+{:error,
+ %{
+   "kind" => "auth" | "config" | "network" | "rate_limited" | "unknown",
+   "message" => "safe localized or operator-facing summary",
+   "details" => %{}
+ }}
+```
+
+Connectivity must never log or return `app_secret`, tenant access tokens, OAuth codes, encrypted callback bodies, or decrypted event payloads.
 
 ## 7. Supervision and Runtime Shape
 
 `BullXFeishu.Adapter.child_specs/2` returns channel-scoped children. The Gateway core remains unchanged.
 
-For WebSocket mode:
+The Feishu adapter starts one WebSocket transport per configured channel:
 
 ```text
 BullXGateway.AdapterSupervisor.Channel
 └── BullXFeishu.Channel
 └── FeishuOpenAPI.WS.Client
-```
-
-For webhook mode:
-
-```text
-BullXGateway.AdapterSupervisor.Channel
-└── BullXFeishu.Channel
-└── Bandit/Plug listener using BullXFeishu.WebhookPlug
 ```
 
 `BullXFeishu.Channel` owns:
@@ -278,10 +385,9 @@ The adapter must emit structured `Logger` lines that let an operator confirm the
 
 At `info` level:
 
-- channel start requested: `channel`, `channel_id`, `connection_mode`, `domain`, `app_type`
+- channel start requested: `channel`, `channel_id`, `transport`, `domain`
 - channel registered in `BullXGateway.AdapterRegistry`
-- WebSocket mode: connecting, connected, reconnecting, disconnected
-- webhook mode: listener started, host, port, event path, card action path
+- WebSocket transport: connecting, connected, reconnecting, disconnected
 - event handlers registered: event type list
 - bot identity resolved: source `configured` or `api`, with `bot_open_id` / `bot_user_id` when available
 
@@ -290,10 +396,9 @@ At `warning` level:
 - bot identity cannot be resolved
 - Feishu app credentials are missing or rejected
 - WebSocket fatal close / reconnect exhaustion
-- webhook signature/decryption failure
 - account gate returns `:activation_required` or `:user_banned`
 
-Secrets, tokens, OAuth codes, raw webhook bodies, and raw message bodies must not be logged.
+Secrets, tokens, OAuth codes, and raw message bodies must not be logged.
 
 ### 8.2 Inbound and Delivery Logs
 
@@ -340,18 +445,74 @@ BullX bootstrap activation code: <code>
 
 The Feishu adapter only consumes that code through `/preauth <code>`.
 
+### 8.4 Setup wizard integration
+
+`/setup` is reached only after `/setup/sessions/new` verifies the bootstrap activation code and stores the bootstrap `code_hash` in the Phoenix cookie session. At that point `SetupController.show/2` renders the Inertia React program at:
+
+```text
+webui/src/apps/setup/App.jsx
+```
+
+The setup app's first step configures `config :bullx, :gateway, adapters` through the database-backed `bullx.gateway.adapters` key. It does not create the first user directly.
+
+Interaction requirements:
+
+- The primary screen is a centered setup card containing a channel list. In the operator UI, a configured adapter-array element is presented as a **channel** (Chinese: **接入平台**) because the operator is adding a concrete platform/channel connection, not editing adapter implementation internals.
+- Each channel row represents one persisted `bullx.gateway.adapters` array element and shows connector type, channel ID, domain/tenant identity, validation state, and last connectivity-check state.
+- The "Add channel" flow starts by choosing a connector (Chinese: **连接器**) from the supported adapter catalog. For this RFC the connector catalog contains Feishu/Lark; future adapters add catalog entries without changing the array interaction.
+- Connector documentation links are connector-specific. The setup UI must not show a generic configuration-guide action before a connector has been selected.
+- Connector-specific authorization policies are rendered from connector capabilities. Current Feishu/Lark supports `external_org_members`; future adapters may support the same or no such policy without changing the channel-list interaction.
+- Editing an existing channel opens the Feishu/Lark connector form directly. Adding a channel separates connector selection from Feishu-specific configuration fields.
+- No channel row is inserted into the array until the Sheet form is locally valid and the operator applies it.
+- Channel fields: `channel_id` and `domain`.
+- Authorization fields: when `authn.external_org_members.enabled` is true, `authn.external_org_members.tenant_key` is required. Setup uses this value to maintain the RFC 0008 global `accounts.authn_match_rules` entry for `metadata.tenant_key`; it is not a Feishu connector credential.
+- Credentials fields: `app_id` and `app_secret`. `app_secret` is write-only; after save, the UI may show that a value exists but must not render the plaintext. The Feishu adapter uses WebSocket transport only, so webhook `Verification Token` and `Encrypt Key` are not collected.
+- The Feishu adapter uses WebSocket transport only and self-built Feishu/Lark app credentials only.
+- Advanced fields include numeric TTL/throttle settings. They are shown in a default-collapsed section with sane defaults and must not require operators to touch advanced fields for a normal self-built Feishu app.
+- The channel list supports add, edit, and remove.
+- Duplicate enabled `{adapter, channel_id}` pairs are invalid.
+- A successful connectivity check is attached to a fingerprint of the exact enabled adapter entry. Any edit to `adapter`, `channel_id`, `enabled`, credentials, or nested objects clears that adapter's success state.
+- The Save button is disabled until every enabled adapter entry is locally valid and has a fresh successful connectivity check.
+- Save writes the complete adapter array in one request. Partial writes are not allowed; a failed save leaves the previous `bullx.gateway.adapters` value in effect.
+
+HTTP surface:
+
+```text
+GET  /setup
+POST /setup/gateway/adapters/check
+POST /setup/gateway/adapters
+GET  /setup/activate-owner
+```
+
+All four routes require `BullXAccounts.setup_required?/0` and the same valid bootstrap setup session used by `SetupController.show/2`. If the bootstrap row is revoked, consumed, expired, or replaced, they clear the stale session key and redirect to `/setup/sessions/new`.
+
+`POST /setup/gateway/adapters/check` validates one enabled adapter entry and calls `BullXFeishu.Adapter.connectivity_check/2`. On success, the response returns safe metadata plus a short-lived server-signed `connectivity_token` for the adapter fingerprint. On failure, it returns field/global errors. It does not persist.
+
+`POST /setup/gateway/adapters` revalidates the full adapter array, recomputes each enabled entry's fingerprint, verifies the matching `connectivity_token`, writes `bullx.gateway.adapters`, refreshes `BullX.Config.Cache`, and redirects to `/setup/activate-owner`. A client-side boolean such as `checked: true` is never accepted as proof.
+
+`GET /setup/activate-owner` renders a pure text instruction page. It tells the operator to open the configured IM channel, message the Feishu bot directly, and send:
+
+```text
+/preauth <activation-code>
+```
+
+The `<activation-code>` is the bootstrap activation code the operator already used to enter `/setup/sessions/new`. The page should not try to recover or display the plaintext from PostgreSQL, because only the hash is stored. It may include copy that says "use the same activation code you entered at the setup gate" and should explain that successful `/preauth` creates the first BullX owner account, consumes the code, and assigns that user to the built-in `admin` group because the consumed code carries `metadata.bootstrap = true`.
+
+"Owner account" is setup workflow language for the active BullX user created by consuming the bootstrap activation code. Permission grants remain governed by RFC 0010's setup/operator workflow; the Feishu adapter only calls `BullXAccounts.consume_activation_code/2`.
+
+After `/preauth` succeeds and a user exists, `/setup` and `/setup/activate-owner` redirect to the normal control plane.
+
 ## 9. SDK Usage
 
 Use `FeishuOpenAPI.Client.new/3` to construct the SDK client:
 
 ```elixir
-FeishuOpenAPI.Client.new(app_id, app_secret, domain: domain, app_type: app_type)
+FeishuOpenAPI.Client.new(app_id, app_secret, domain: domain)
 ```
 
 Use:
 
-- `FeishuOpenAPI.Event.verify_and_decode/3` for webhook URL verification, signature verification, decryption, and event decoding.
-- `FeishuOpenAPI.Event.Dispatcher` for WebSocket and webhook event routing.
+- `FeishuOpenAPI.Event.Dispatcher` for WebSocket event routing.
 - `FeishuOpenAPI.CardAction.Handler` for interactive card callbacks.
 - `FeishuOpenAPI.WS.Client` for long-lived event transport.
 - `FeishuOpenAPI.Auth.user_access_token/3` for OIDC token exchange.
@@ -417,8 +578,7 @@ Profile data may include:
   "phone" => mobile,
   "open_id" => open_id,
   "union_id" => union_id,
-  "user_id" => user_id,
-  "tenant_key" => tenant_key
+  "user_id" => user_id
 }
 ```
 
@@ -811,11 +971,11 @@ The callback flow is:
        "avatar_url" => avatar_url,
        "open_id" => open_id,
        "union_id" => union_id,
-       "user_id" => user_id,
-       "tenant_key" => tenant_key
+       "user_id" => user_id
      },
      metadata: %{
        "channel_id" => channel_id,
+       "tenant_key" => tenant_key,
        "domain" => domain
      }
    }
@@ -910,14 +1070,6 @@ Chunks may be:
 - `%{replace_text: binary()}` or `%{"replace_text" => binary()}`: replace accumulated text.
 
 The summary is finalized once, at close, using the first 80 visible characters of the final text. Per-chunk updates patch only `cardElement.content`; they do not need to synchronize `summary`.
-
-When `status_reactions.enabled` is true and `reply_to_external_id` is present, the adapter sends a best-effort Feishu reaction before streaming starts:
-
-- start: add `Typing`
-- success: remove the in-progress reaction when Feishu returns a reaction ID that can be removed
-- failure/cancel: replace the in-progress reaction with `CrossMark`
-
-Reaction failures are warnings only. They must not turn a successful stream into a failed delivery.
 
 On stream error or cancellation, the adapter attempts one final card update with localized failure text and then returns the original error to the Gateway delivery pipeline.
 
@@ -1020,12 +1172,9 @@ Tests must fail if any adapter-used key is missing in either locale.
 
 ## 19. Security
 
-- Verify Feishu webhook signatures and encrypted payloads through `FeishuOpenAPI.Event.verify_and_decode/3`.
-- Verify card action callbacks through `FeishuOpenAPI.CardAction.Handler`.
-- Preserve webhook raw body bytes before JSON parsing. `BullXFeishu.WebhookPlug` must run before any body-consuming parser or use `Plug.Parsers, body_reader: {BullXGateway.Webhook.RawBodyReader, :read_body, []}` and read `conn.assigns.raw_body` for SDK verification.
-- Reject unsigned webhook requests when verification config is present.
-- Enforce a webhook max body size, default `1 MB`.
-- Do not log raw webhook bodies, OAuth codes, access tokens, refresh tokens, app secrets, or decrypted callback payloads.
+- Decode Feishu WebSocket events through the SDK dispatcher.
+- Verify interactive card actions through `FeishuOpenAPI.CardAction.Handler`.
+- Do not log OAuth codes, access tokens, refresh tokens, app secrets, or decrypted callback payloads.
 - Validate OAuth state and redirect only to local paths.
 - Discard Feishu user tokens after profile retrieval.
 - Drop self-sent bot messages at the start of event mapping using configured or resolved bot identity.
@@ -1039,6 +1188,8 @@ Tests must fail if any adapter-used key is missing in either locale.
 Add tests under `test/bullx_feishu/` for:
 
 - Config normalization and secret redaction.
+- `connectivity_check/2` success with fake SDK credentials and safe metadata payload.
+- `connectivity_check/2` failure mapping for invalid config, rejected credentials, network failure, and rate limiting.
 - SDK generic request usage for userinfo, message APIs, CardKit, upload, and download.
 - WebSocket event mapping for:
   - message received
@@ -1071,15 +1222,15 @@ Use fake SDK clients or Req test stubs. Do not call Feishu network endpoints in 
 
 Cover:
 
-- `BullXFeishu.Adapter.child_specs/2` in WebSocket mode.
-- Webhook challenge handling.
-- Webhook raw body preservation for SDK signature verification.
-- Webhook signature/decryption dispatch through SDK fixtures.
+- `BullXFeishu.Adapter.child_specs/2` starts `BullXFeishu.Channel` and `FeishuOpenAPI.WS.Client`.
 - Card action callback dispatch through SDK fixtures.
 - `BullXGateway.publish_inbound/1` path with a Feishu message.
 - `BullXGateway.deliver/1` send/edit paths with fake Feishu SDK responses.
 - DLQ write on non-retryable and exhausted retry cases.
 - Feishu SSO controller callback into `BullXAccounts.login_from_provider/1`.
+- Setup gateway adapter check endpoint calls Feishu connectivity without persisting.
+- Setup gateway adapter save endpoint rejects stale/missing connectivity tokens and writes `bullx.gateway.adapters` only after all enabled entries pass.
+- Setup owner activation instruction page remains text-only and redirects away once a user exists.
 
 ### 20.3 Commands
 
@@ -1088,6 +1239,7 @@ Run:
 ```bash
 mix test test/bullx_feishu
 mix test test/bullx_web/controllers/feishu_auth_controller_test.exs
+mix test test/bullx_web/controllers/setup_gateway_controller_test.exs
 mix test test/bullx_accounts/authn_test.exs
 mix precommit
 ```
@@ -1096,27 +1248,34 @@ mix precommit
 
 1. `BullXFeishu.Adapter` implements `BullXGateway.Adapter`.
 2. A configured Feishu channel starts under `BullXGateway.AdapterSupervisor`.
-3. WebSocket mode receives Feishu events through `FeishuOpenAPI.WS.Client`.
-4. Webhook mode verifies and decodes Feishu callbacks through the SDK.
+3. WebSocket transport receives Feishu events through `FeishuOpenAPI.WS.Client`.
+4. The Feishu adapter exposes only WebSocket transport configuration and starts no HTTP transport listener.
 5. Feishu message, edit, recall, reaction, slash command, and card action events normalize to RFC 0002 inputs.
 6. Gateway dedupe receives stable IDs for every published Feishu input.
 7. Self-sent bot messages are filtered before account gate or publish.
 8. `/ping` directly replies `PONG!` through `BullXGateway.deliver/1` without requiring account activation.
-9. `/preauth <code>` links a Feishu actor through `BullXAccounts` and maps all RFC 0008 failure atoms to localized replies.
-10. `/web_auth` calls `BullXAccounts.issue_user_channel_auth_code/3` and issues a localized linking message only for bound active actors.
-11. `/preauth` and `/web_auth` are rejected in group chats without consuming or issuing secrets.
-12. Feishu OIDC callback logs in bound users through `BullXAccounts.login_from_provider/1` using `open_id` as `external_id = "feishu:#{open_id}"`.
-13. Feishu web login uses Phoenix cookie sessions and does not persist Feishu tokens.
-14. Send, edit, and stream delivery work through RFC 0003.
-15. Feishu reply fallback for codes `230011` and `231003` degrades to normal chat send when possible.
-16. Feishu streaming cards finalize correctly on success, error, and cancellation.
-17. Stream DLQ replay with nil content returns `%{"kind" => "payload"}`.
-18. Adapter failures return RFC 0003 string-keyed error maps.
-19. Failed outbound deliveries enter existing retry/DLQ flow with correct error kind.
-20. Feishu adapter emits safe startup, inbound, direct-command, publish-result, and delivery-enqueue logs for manual local runs.
-21. All Feishu human-facing text is localized in `en-US` and `zh-Hans-CN` using the application-global locale.
-22. No Gateway core behaviour, schema, or public signal contract changes are required.
-23. `mix precommit` passes.
+9. `BullXFeishu.Adapter.connectivity_check/2` verifies credentials/reachability without starting transport children, registering the channel, publishing signals, or logging secrets.
+10. `/setup` renders `webui/src/apps/setup/App.jsx` after `/setup/sessions/new` validates the bootstrap activation code.
+11. The setup app supports adding/editing/removing a complex `adapters` array with nested Feishu `credentials` and advanced objects.
+12. Setup disables save until each enabled Feishu adapter entry has a successful connectivity check and server-signed token for the exact submitted entry fingerprint.
+13. Setup persists the full adapter array to `bullx.gateway.adapters` and `BullX.Config.Gateway.adapters/0` reconstructs the runtime `{{:feishu, channel_id}, BullXFeishu.Adapter, config}` tuple list.
+14. After setup saves adapters, `/setup/activate-owner` renders text-only IM instructions for `/preauth <activation-code>`.
+15. The post-save activation page does not recover or display plaintext activation codes; it directs the operator to use the same bootstrap code used at the setup gate.
+16. `/preauth <code>` links a Feishu actor through `BullXAccounts` and maps all RFC 0008 failure atoms to localized replies.
+17. `/web_auth` calls `BullXAccounts.issue_user_channel_auth_code/3` and issues a localized linking message only for bound active actors.
+18. `/preauth` and `/web_auth` are rejected in group chats without consuming or issuing secrets.
+19. Feishu OIDC callback logs in bound users through `BullXAccounts.login_from_provider/1` using `open_id` as `external_id = "feishu:#{open_id}"`.
+20. Feishu web login uses Phoenix cookie sessions and does not persist Feishu tokens.
+21. Send, edit, and stream delivery work through RFC 0003.
+22. Feishu reply fallback for codes `230011` and `231003` degrades to normal chat send when possible.
+23. Feishu streaming cards finalize correctly on success, error, and cancellation.
+24. Stream DLQ replay with nil content returns `%{"kind" => "payload"}`.
+25. Adapter failures return RFC 0003 string-keyed error maps.
+26. Failed outbound deliveries enter existing retry/DLQ flow with correct error kind.
+27. Feishu adapter emits safe startup, inbound, direct-command, publish-result, and delivery-enqueue logs for manual local runs.
+28. All Feishu human-facing text is localized in `en-US` and `zh-Hans-CN` using the application-global locale.
+29. No Gateway signal contract changes are required; the only Gateway core contract extension is the RFC 0002 adapter connectivity callback/config codec.
+30. `mix precommit` passes.
 
 ## 22. References
 

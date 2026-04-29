@@ -16,6 +16,12 @@ defmodule BullXGateway.DeliverTest do
     def adapter_id, do: :retry_then_success
 
     @impl true
+    def config_docs, do: %{"en-US" => "https://example.test/retry-then-success"}
+
+    @impl true
+    def connectivity_check(_channel, _config), do: {:ok, %{"status" => "ok"}}
+
+    @impl true
     def capabilities, do: [:send]
 
     @impl true

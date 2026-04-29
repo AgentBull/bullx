@@ -50,7 +50,6 @@ defmodule BullXAIAgent.Context do
     @type t :: %__MODULE__{
             role: :user | :assistant | :tool | :system,
             content: String.t() | [ContentPart.t()] | nil,
-            thinking: String.t() | nil,
             reasoning_details: list() | nil,
             tool_calls: list() | nil,
             tool_call_id: String.t() | nil,
@@ -62,7 +61,6 @@ defmodule BullXAIAgent.Context do
     defstruct [
       :role,
       :content,
-      :thinking,
       :reasoning_details,
       :tool_calls,
       :tool_call_id,
@@ -113,11 +111,10 @@ defmodule BullXAIAgent.Context do
   end
 
   @doc """
-  Append an assistant message to the thread, optionally with tool calls and thinking content.
+  Append an assistant message to the thread, optionally with tool calls.
   """
   @spec append_assistant(t(), String.t() | nil, list() | nil, keyword()) :: t()
   def append_assistant(thread, content, tool_calls \\ nil, opts \\ []) do
-    thinking = Keyword.get(opts, :thinking)
     reasoning_details = Keyword.get(opts, :reasoning_details)
     refs = Keyword.get(opts, :refs)
 
@@ -125,7 +122,6 @@ defmodule BullXAIAgent.Context do
       role: :assistant,
       content: content,
       tool_calls: tool_calls,
-      thinking: thinking,
       reasoning_details: reasoning_details,
       refs: refs
     })
@@ -413,12 +409,11 @@ defmodule BullXAIAgent.Context do
   defp entry_to_message(%Entry{
          role: :assistant,
          content: content,
-         thinking: thinking,
          reasoning_details: reasoning_details,
          tool_calls: nil,
          refs: refs
        }) do
-    %{role: :assistant, content: build_assistant_content(content, thinking)}
+    %{role: :assistant, content: content}
     |> maybe_add(:reasoning_details, reasoning_details)
     |> maybe_add(:refs, refs)
   end
@@ -426,14 +421,13 @@ defmodule BullXAIAgent.Context do
   defp entry_to_message(%Entry{
          role: :assistant,
          content: content,
-         thinking: thinking,
          reasoning_details: reasoning_details,
          tool_calls: tool_calls,
          refs: refs
        }) do
     %{
       role: :assistant,
-      content: build_assistant_content(content || "", thinking),
+      content: content || "",
       tool_calls: tool_calls
     }
     |> maybe_add(:reasoning_details, reasoning_details)
@@ -466,26 +460,15 @@ defmodule BullXAIAgent.Context do
     |> maybe_add(:refs, entry.refs)
   end
 
-  defp build_assistant_content(content, nil), do: content
-  defp build_assistant_content(content, ""), do: content
-
-  defp build_assistant_content(content, thinking) when is_binary(thinking) do
-    [
-      %{type: :thinking, thinking: thinking},
-      %{type: :text, text: content || ""}
-    ]
-  end
-
   defp message_to_entry(msg) when is_map(msg) do
     role = get_field(msg, :role, "role")
     normalized_role = normalize_role(role)
     raw_content = get_field(msg, :content, "content")
-    {text_content, thinking} = extract_entry_thinking(raw_content)
+    text_content = extract_entry_text(raw_content)
 
     %Entry{
       role: normalized_role,
       content: normalize_entry_content(normalized_role, raw_content, text_content),
-      thinking: thinking,
       reasoning_details: get_field(msg, :reasoning_details, "reasoning_details"),
       tool_calls: get_field(msg, :tool_calls, "tool_calls"),
       tool_call_id: get_field(msg, :tool_call_id, "tool_call_id"),
@@ -530,28 +513,10 @@ defmodule BullXAIAgent.Context do
     if is_binary(text), do: ContentPart.text(text, metadata), else: nil
   end
 
-  defp normalize_tool_content_part_map(type, part) when type in [:thinking, "thinking"] do
-    text = get_field(part, :thinking) || get_field(part, :text)
-    metadata = get_field(part, :metadata, %{})
-    if is_binary(text), do: ContentPart.thinking(text, metadata), else: nil
-  end
-
   defp normalize_tool_content_part_map(type, part) when type in [:image_url, "image_url"] do
     url = get_field(part, :url)
     metadata = get_field(part, :metadata, %{})
     if is_binary(url), do: ContentPart.image_url(url, metadata), else: nil
-  end
-
-  defp normalize_tool_content_part_map(type, part) when type in [:image, "image"] do
-    data = get_field(part, :data)
-    media_type = get_field(part, :media_type, "image/png")
-    metadata = get_field(part, :metadata, %{})
-
-    cond do
-      is_binary(data) and metadata == %{} -> ContentPart.image(data, media_type)
-      is_binary(data) -> ContentPart.image(data, media_type, metadata)
-      true -> nil
-    end
   end
 
   defp normalize_tool_content_part_map(type, part) when type in [:file, "file"] do
@@ -568,37 +533,20 @@ defmodule BullXAIAgent.Context do
 
   defp normalize_tool_content_part_map(_, _), do: nil
 
-  defp extract_entry_thinking(content) when is_list(content) do
-    thinking =
-      content
-      |> Enum.filter(fn
-        %{type: :thinking} -> true
-        %{type: "thinking"} -> true
-        _ -> false
-      end)
-      |> Enum.map_join("", fn
-        %{thinking: t} when is_binary(t) -> t
-        %{text: t} when is_binary(t) -> t
-        _ -> ""
-      end)
-
-    text =
-      content
-      |> Enum.filter(fn
-        %{type: :text} -> true
-        %{type: "text"} -> true
-        _ -> false
-      end)
-      |> Enum.map_join("", fn
-        %{text: t} when is_binary(t) -> t
-        _ -> ""
-      end)
-
-    thinking = if thinking == "", do: nil, else: thinking
-    {text, thinking}
+  defp extract_entry_text(content) when is_list(content) do
+    content
+    |> Enum.filter(fn
+      %{type: :text} -> true
+      %{type: "text"} -> true
+      _ -> false
+    end)
+    |> Enum.map_join("", fn
+      %{text: text} when is_binary(text) -> text
+      _ -> ""
+    end)
   end
 
-  defp extract_entry_thinking(content), do: {content, nil}
+  defp extract_entry_text(content), do: content
 
   # Helper to get a field from either atom or string key
   defp get_field(map, key) do
@@ -631,13 +579,11 @@ defmodule BullXAIAgent.Context do
   defp coerce_entry(%{} = entry) do
     role = get_field(entry, :role) |> normalize_role()
     raw_content = get_field(entry, :content)
-    explicit_thinking = get_field(entry, :thinking)
-    {text_content, extracted_thinking} = extract_entry_thinking(raw_content)
+    text_content = extract_entry_text(raw_content)
 
     %Entry{
       role: role,
       content: normalize_entry_content(role, raw_content, text_content),
-      thinking: explicit_thinking || if(role == :assistant, do: extracted_thinking, else: nil),
       reasoning_details: get_field(entry, :reasoning_details),
       tool_calls: get_field(entry, :tool_calls),
       tool_call_id: get_field(entry, :tool_call_id),

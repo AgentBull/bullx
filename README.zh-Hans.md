@@ -79,7 +79,7 @@ bun run lint
 
 ## Rsbuild 资产构建
 
-React/Inertia 入口位于 `webui/src/app.jsx`，各 SPA 页面位于 `webui/src/spas/`。构建可部署资产时，Rsbuild 会写入 `priv/static/assets/.rsbuild/manifest.json`；非开发环境下，Phoenix 会从该 manifest 解析脚本与样式。
+React/Inertia 入口位于 `webui/src/app.jsx`，各 SPA 页面位于 `webui/src/apps/`。构建可部署资产时，Rsbuild 会写入 `priv/static/assets/.rsbuild/manifest.json`；非开发环境下，Phoenix 会从该 manifest 解析脚本与样式。
 从仓库根目录运行 Bun；Rsbuild 使用 `webui/src/` 存放应用源码，使用 `assets/css/` 存放 Phoenix CSS 入口。
 
 ```sh

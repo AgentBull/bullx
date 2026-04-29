@@ -26,6 +26,16 @@ defmodule BullXWeb.Router do
 
     get "/", PageController, :home
     get "/setup", SetupController, :show
+    get "/setup/llm", SetupLLMController, :show
+    post "/setup/llm/providers/check", SetupLLMController, :providers_check
+    post "/setup/llm/providers", SetupLLMController, :providers_save
+    get "/setup/gateway", SetupGatewayController, :show
+    get "/setup/activate-owner", SetupController, :activate_owner
+    get "/setup/activate-owner/status", SetupController, :activation_status
+    post "/setup/gateway/adapters/check", SetupGatewayController, :check
+    post "/setup/gateway/adapters", SetupGatewayController, :save
+    get "/setup/sessions/new", SetupSessionController, :new
+    post "/setup/sessions", SetupSessionController, :create
     get "/sessions/new", SessionController, :new
     post "/sessions", SessionController, :create
     delete "/sessions", SessionController, :delete

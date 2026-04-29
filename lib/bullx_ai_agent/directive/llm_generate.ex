@@ -247,7 +247,7 @@ defimpl Jido.AgentServer.DirectiveExec, for: BullXAIAgent.Directive.LLMGenerate 
 
     messages = Helpers.build_directive_messages(context, system_prompt)
 
-    case ReqLLM.Generation.generate_text(model, messages, opts) do
+    case BullXAIAgent.generate_text(messages, model: model, opts: opts) do
       {:ok, response} ->
         turn = Turn.from_response(response, model: model)
 

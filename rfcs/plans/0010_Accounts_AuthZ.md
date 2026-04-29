@@ -23,7 +23,7 @@ Key decisions:
 - RFC 0008 remains the source of truth for users, channel bindings, activation codes, Web login, and session establishment.
 - AuthZ consumes RFC 0008 users. It does not create channel bindings, issue auth codes, establish sessions, or change Gateway actor semantics.
 - Banned users are denied before group expansion, cache lookup, or Cedar evaluation.
-- The built-in `admin` static group is seeded by AuthZ, but AuthZ does not decide which user should be an administrator.
+- The built-in `admin` static group is seeded by AuthZ. RFC 0008's bootstrap `/preauth` handoff assigns the user who consumes an activation code with `metadata.bootstrap = true`; other administrator membership changes use normal operator-managed static membership APIs.
 - The first implementation targets BullX's current single-node deployment model. AuthZ cache invalidation is local and reconstructible.
 - Gateway signals continue to carry channel-local actors only. Business code resolves a BullX user through AuthN and then asks AuthZ for authorization when needed.
 - Permission caches are performance hints. PostgreSQL remains the system of record, and all cached state must be safe to rebuild.
@@ -91,7 +91,7 @@ Key decisions:
 - Full Web UI for managing groups and grants.
 - User-initiated authorization request workflows.
 - Fine-grained cache invalidation by dependency graph.
-- Administrator onboarding and setup workflows.
+- Administrator onboarding and setup workflows beyond the RFC 0008 bootstrap-code handoff.
 
 ## 3. Subsystem Placement
 
@@ -146,7 +146,7 @@ AuthZ must not:
 - issue user channel auth codes;
 - establish Web sessions;
 - infer a BullX user from a Gateway actor;
-- decide the setup or onboarding workflow that grants a user membership in `admin`.
+- decide administrator membership outside the RFC 0008 bootstrap-code handoff and normal operator-managed static membership APIs.
 
 Callers that start from Gateway identity must first call RFC 0008 functions such as:
 
@@ -348,7 +348,7 @@ Multiple grants are combined with allow-any semantics. There is no deny grant an
 
 AuthZ bootstrap creates the built-in `admin` group only. It does not create application-specific permission grants in this RFC.
 
-The `admin` group is deliberately not magical. It authorizes nothing until a later RFC, operator seed, or test fixture attaches normal `permission_grants` rows to it. Membership assignment belongs to setup or operator workflows and uses normal static membership APIs.
+The `admin` group is deliberately not magical. It authorizes nothing until a later RFC, operator seed, or test fixture attaches normal `permission_grants` rows to it. RFC 0008's `/preauth` flow adds the bootstrap-code consumer to this group only when the consumed activation code has `metadata.bootstrap = true`; all other membership assignment belongs to operator workflows and uses normal static membership APIs.
 
 The built-in `admin` group cannot be deleted through the public AuthZ API. Public membership APIs must reject removing the final static member from the built-in `admin` group with `{:error, :last_admin_member}`.
 
@@ -782,14 +782,14 @@ Tests must prove:
 37. Cache TTL expiry is honored.
 38. Cache invalidates after group, membership, grant, or user status writes through public APIs.
 39. AuthZ bootstrap creates a missing `admin` group when AuthZ tables exist.
-40. AuthZ bootstrap never creates admin memberships or application-specific grants.
+40. AuthZ bootstrap never creates admin memberships or application-specific grants; the only automatic admin membership is the RFC 0008 `/preauth` handoff for a consumed `metadata.bootstrap = true` activation code.
 41. AuthN `/preauth`, provider login, and `/web_auth` behavior remains RFC 0008 behavior.
 
 ## 15. Acceptance Criteria
 
 1. `BullXAccounts` exposes AuthZ facade functions while RFC 0008 AuthN remains the owner of identity, login, channel binding, activation, and sessions.
 2. AuthZ tables persist groups, static memberships, and permission grants with UUIDv7 primary keys, PostgreSQL-native enum types where applicable, real user/group foreign keys, and the resource/action constraints in this RFC.
-3. Built-in `admin` seed data exists without application-specific grants or automatic user membership assignment; AuthZ does not choose administrators.
+3. Built-in `admin` seed data exists without application-specific grants. The only automatic user membership assignment is the RFC 0008 bootstrap-code handoff; AuthZ does not otherwise choose administrators.
 4. Active users can be authorized through direct, static group, or computed group grants; banned users are always denied; computed group memberships are never persisted as rows.
 5. Cedar, caller context, and invalid persisted-data failure behavior follows this RFC: condition strings cannot inject additional policies, failures fail closed per grant, malformed persisted rows are observable, and valid denials are not logged as data corruption.
 6. Permission caches are reconstructible, default to a finite local TTL, include canonical caller context in cache keys, and invalidate on public AuthZ/user-status writes.

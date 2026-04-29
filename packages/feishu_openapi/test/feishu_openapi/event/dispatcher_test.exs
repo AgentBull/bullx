@@ -74,6 +74,33 @@ defmodule FeishuOpenAPI.Event.DispatcherTest do
       assert {:error, :bad_verification_token} = Dispatcher.dispatch(d, {:decoded, decoded})
     end
 
+    test "trusted decoded events bypass webhook verification token" do
+      me = self()
+
+      handler = fn event_type, event ->
+        send(me, {:ran, event_type, event})
+        :handled
+      end
+
+      d =
+        Dispatcher.new(verification_token: "vt_x")
+        |> Dispatcher.on("im.message.receive_v1", handler)
+
+      decoded = %{
+        "schema" => "2.0",
+        "header" => %{"event_type" => "im.message.receive_v1"},
+        "event" => %{"message_id" => "m-1"}
+      }
+
+      assert {:ok, :handled} = Dispatcher.dispatch(d, {:trusted_decoded, decoded})
+
+      assert_receive {:ran, "im.message.receive_v1",
+                      %Event{
+                        type: "im.message.receive_v1",
+                        content: %{"message_id" => "m-1"}
+                      }}
+    end
+
     test "unknown event types return :no_handler" do
       d = Dispatcher.new()
 

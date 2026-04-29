@@ -6,6 +6,7 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod crypto {
+  pub mod aead;
   pub mod argon2;
   pub mod blake3;
   pub mod jwt;

@@ -25,8 +25,11 @@ defmodule FeishuOpenAPI.Event.Dispatcher do
     * `{:raw, body, headers}` — HTTP webhook. Verifies signature (unless
       `skip_sign_verify: true` or `encrypt_key` is nil) and replay-window
       (unless `skip_timestamp_check: true`).
-    * `{:decoded, map}` — already-parsed envelope (e.g. from the WebSocket
-      frame handler, where the transport already decrypted).
+    * `{:decoded, map}` — already-parsed envelope. Raw body signature checks
+      are skipped, but `verification_token` is still enforced when configured.
+    * `{:trusted_decoded, map}` — decoded envelope from an already-authenticated
+      transport such as long-connection WebSocket. Skips webhook Verification
+      Token checks.
 
   Handler functions receive `(event_type_string, %FeishuOpenAPI.Event{})`.
   The full raw envelope is always accessible as `event.raw`. Callback
@@ -108,7 +111,10 @@ defmodule FeishuOpenAPI.Event.Dispatcher do
     %{d | callback_handlers: Map.put(d.callback_handlers, callback_type, handler)}
   end
 
-  @spec dispatch(t(), {:raw, binary(), map() | list()} | {:decoded, map()}) ::
+  @spec dispatch(
+          t(),
+          {:raw, binary(), map() | list()} | {:decoded, map()} | {:trusted_decoded, map()}
+        ) ::
           {:ok, term()} | {:challenge, String.t()} | {:error, term()}
   def dispatch(%__MODULE__{} = d, {:raw, body, headers}) when is_binary(body) do
     d
@@ -119,6 +125,12 @@ defmodule FeishuOpenAPI.Event.Dispatcher do
   def dispatch(%__MODULE__{} = d, {:decoded, decoded}) when is_map(decoded) do
     d
     |> Event.verify_decoded(decoded)
+    |> route_result(d)
+  end
+
+  def dispatch(%__MODULE__{} = d, {:trusted_decoded, decoded}) when is_map(decoded) do
+    d
+    |> Event.verify_trusted_decoded(decoded)
     |> route_result(d)
   end
 

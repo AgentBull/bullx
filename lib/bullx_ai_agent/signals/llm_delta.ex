@@ -9,7 +9,7 @@ defmodule BullXAIAgent.Signal.LLMDelta do
     schema: [
       call_id: [type: :string, required: true, doc: "Correlation ID for the LLM call"],
       delta: [type: :string, required: true, doc: "Text chunk from the stream"],
-      chunk_type: [type: :atom, default: :content, doc: "Type: :content or :thinking"],
+      chunk_type: [type: :atom, default: :content, doc: "Type: :content"],
       metadata: [type: :map, default: %{}, doc: "Optional request/run metadata for correlation"]
     ]
 end

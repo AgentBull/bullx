@@ -24,7 +24,7 @@ defmodule BullXAIAgent.Plugins.Planning do
   `mount/2` initializes shared defaults consumed by planning actions when caller
   params omit those fields:
 
-  - `default_model`: `:planning`
+  - `default_model`: `:heavy`
   - `default_max_tokens`: `4096`
   - `default_temperature`: `0.7`
 
@@ -59,21 +59,19 @@ defmodule BullXAIAgent.Plugins.Planning do
   The plugin uses `BullXAIAgent.resolve_model/1` to resolve model aliases:
 
   * `:fast` - Quick model for simple tasks
-  * `:capable` - Capable model for complex tasks
-  * `:planning` - Model optimized for planning (default: `anthropic:claude-sonnet-4-20250514`)
-
-  Direct model specs are also supported.
+  * `:fast` - Quick model for simple tasks
+  * `:heavy` - Heavier model for complex planning tasks
 
   ## Architecture Notes
 
-  **Direct ReqLLM Calls**: Planning actions call ReqLLM directly.
+  **Generation Facade**: Planning actions call through `BullXAIAgent`.
   **Specialized Prompts**: Each action uses a task-specific system prompt.
   **Lightweight State**: Plugin state only stores execution defaults.
   """
 
   use Jido.Plugin,
     name: "planning",
-    state_key: :planning,
+    state_key: :planner,
     actions: [
       BullXAIAgent.Actions.Planning.Plan,
       BullXAIAgent.Actions.Planning.Decompose,
@@ -92,7 +90,7 @@ defmodule BullXAIAgent.Plugins.Planning do
   @impl Jido.Plugin
   def mount(_agent, config) do
     initial_state = %{
-      default_model: Map.get(config, :default_model, :planning),
+      default_model: Map.get(config, :default_model, :heavy),
       default_max_tokens: Map.get(config, :default_max_tokens, 4096),
       default_temperature: Map.get(config, :default_temperature, 0.7)
     }
@@ -108,8 +106,8 @@ defmodule BullXAIAgent.Plugins.Planning do
   def schema do
     Zoi.object(%{
       default_model:
-        Zoi.atom(description: "Default model alias (:fast, :capable, :planning)")
-        |> Zoi.default(:planning),
+        Zoi.atom(description: "Default model alias (:default, :fast, :heavy, :compression)")
+        |> Zoi.default(:heavy),
       default_max_tokens:
         Zoi.integer(description: "Default max tokens for generation") |> Zoi.default(4096),
       default_temperature:

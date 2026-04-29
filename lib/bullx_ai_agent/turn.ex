@@ -476,20 +476,6 @@ defmodule BullXAIAgent.Turn do
 
   defp normalize_reasoning_details(_), do: nil
 
-  defp extract_thinking_content(content) when is_list(content) do
-    content
-    |> Enum.filter(fn
-      %{type: :thinking, thinking: thinking} when is_binary(thinking) -> true
-      %{type: "thinking", thinking: thinking} when is_binary(thinking) -> true
-      _ -> false
-    end)
-    |> Enum.map_join("\n\n", & &1.thinking)
-    |> case do
-      "" -> nil
-      thinking -> thinking
-    end
-  end
-
   defp extract_thinking_content(_), do: nil
 
   defp normalize_tool_calls(nil), do: []
@@ -905,7 +891,6 @@ defmodule BullXAIAgent.Turn do
   end
 
   # File content parts carry raw binary data that can't be JSON-encoded.
-  # Only include text-safe parts (text, image_url, video_url, thinking) in the JSON payload.
   defp json_safe_content_parts(parts) when is_list(parts) do
     case Enum.filter(parts, &json_safe_content_part?/1) do
       [] -> nil
@@ -914,10 +899,6 @@ defmodule BullXAIAgent.Turn do
   end
 
   defp json_safe_content_part?(%ContentPart{type: :file}), do: false
-
-  defp json_safe_content_part?(%ContentPart{type: :image, data: data}) when is_binary(data),
-    do: false
-
   defp json_safe_content_part?(%ContentPart{}), do: true
   defp json_safe_content_part?(_), do: true
 
@@ -956,28 +937,10 @@ defmodule BullXAIAgent.Turn do
     if is_binary(text), do: ContentPart.text(text, metadata), else: nil
   end
 
-  defp normalize_content_part_map(type, part) when type in [:thinking, "thinking"] do
-    text = get_field(part, :thinking) || get_field(part, :text)
-    metadata = get_field(part, :metadata, %{})
-    if is_binary(text), do: ContentPart.thinking(text, metadata), else: nil
-  end
-
   defp normalize_content_part_map(type, part) when type in [:image_url, "image_url"] do
     url = get_field(part, :url)
     metadata = get_field(part, :metadata, %{})
     if is_binary(url), do: ContentPart.image_url(url, metadata), else: nil
-  end
-
-  defp normalize_content_part_map(type, part) when type in [:image, "image"] do
-    data = get_field(part, :data)
-    media_type = get_field(part, :media_type, "image/png")
-    metadata = get_field(part, :metadata, %{})
-
-    cond do
-      is_binary(data) and metadata == %{} -> ContentPart.image(data, media_type)
-      is_binary(data) -> ContentPart.image(data, media_type, metadata)
-      true -> nil
-    end
   end
 
   defp normalize_content_part_map(type, part) when type in [:file, "file"] do
@@ -997,8 +960,8 @@ defmodule BullXAIAgent.Turn do
   defp content_parts_list?(parts) when is_list(parts) and parts != [] do
     Enum.all?(parts, fn
       %ContentPart{} -> true
-      %{type: type} when type in [:text, :thinking, :image_url, :image, :file] -> true
-      %{"type" => type} when type in ["text", "thinking", "image_url", "image", "file"] -> true
+      %{type: type} when type in [:text, :image_url, :file] -> true
+      %{"type" => type} when type in ["text", "image_url", "file"] -> true
       _ -> false
     end)
   end

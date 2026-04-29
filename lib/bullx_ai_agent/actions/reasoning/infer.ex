@@ -7,7 +7,7 @@ defmodule BullXAIAgent.Actions.Reasoning.Infer do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:reasoning`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:heavy`) or direct spec
   * `premises` (required) - The given facts/information as premises
   * `question` (required) - What to infer from the premises
   * `context` (optional) - Additional background information
@@ -40,7 +40,7 @@ defmodule BullXAIAgent.Actions.Reasoning.Infer do
     schema:
       Zoi.object(%{
         model:
-          Zoi.any(description: "Model alias (e.g., :reasoning) or direct model spec string")
+          Zoi.any(description: "Model alias (e.g., :heavy) or direct model spec string")
           |> Zoi.optional(),
         premises: Zoi.string(description: "The given facts/information as premises"),
         question: Zoi.string(description: "What to infer from the premises"),
@@ -93,16 +93,16 @@ defmodule BullXAIAgent.Actions.Reasoning.Infer do
          {:ok, validated_params} <- validate_and_sanitize_params(params),
          {:ok, req_context} <- build_inference_messages(validated_params),
          opts = build_opts(validated_params),
-         {:ok, response} <- ReqLLM.Generation.generate_text(model, req_context.messages, opts) do
+         {:ok, response} <- Helpers.generate_text(model, req_context.messages, opts) do
       {:ok, format_result(response, model)}
     end
   end
 
   # Private Functions
 
-  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:reasoning)}
+  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:heavy)}
   defp resolve_model(model) when is_atom(model), do: {:ok, BullXAIAgent.resolve_model(model)}
-  defp resolve_model(model) when is_binary(model), do: {:ok, model}
+  defp resolve_model(_model), do: {:error, :invalid_model_format}
 
   defp build_inference_messages(params) do
     user_prompt = build_inference_user_prompt(params)

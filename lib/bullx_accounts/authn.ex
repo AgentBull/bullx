@@ -1,11 +1,32 @@
 defmodule BullXAccounts.AuthN do
-  @moduledoc false
+  @moduledoc """
+  AuthN implementation for `BullXAccounts`.
+
+  Owns identity creation, channel binding, activation codes, web auth codes,
+  and session-user lookup. Public callers should go through the
+  `BullXAccounts` facade; the docs here are the canonical reference for the
+  delegated functions.
+
+  Three flows interact here:
+
+    * **Bootstrap activation code** — a single-use code minted at startup
+      when no users exist; consuming it through `/preauth` assigns the
+      created user to the built-in admin group. Created/refreshed under a
+      Postgres advisory lock to prevent duplicates across racing boot
+      attempts.
+    * **Channel binding** — durable mapping from a Gateway actor
+      `(adapter, channel_id, external_id)` to a `BullXAccounts.User`.
+    * **Activation / login flows** — channel actors enter via one of three
+      entry points (`resolve_channel_actor/3`, `match_or_create_from_channel/1`,
+      `login_from_provider/1`) that differ in how they treat unbound actors.
+  """
 
   import Ecto.Query
 
   alias BullX.Config.Accounts, as: AccountsConfig
   alias BullX.Repo
   alias BullXAccounts.ActivationCode
+  alias BullXAccounts.AuthZ
   alias BullXAccounts.AuthZ.Cache
   alias BullXAccounts.Code
   alias BullXAccounts.User
@@ -15,10 +36,123 @@ defmodule BullXAccounts.AuthN do
   @bind_existing_user "bind_existing_user"
   @allow_create_user "allow_create_user"
   @user_fields %{"email" => :email, "phone" => :phone, "username" => :username}
+  @bootstrap_metadata_key "bootstrap"
+  @bootstrap_activation_code_lock_namespace 92_408
+  @bootstrap_activation_code_lock_id 8
 
+  @doc "Whether the system has zero users — the trigger for bootstrap activation."
   @spec setup_required?() :: boolean()
   def setup_required?, do: not Repo.exists?(from user in User, select: 1)
 
+  @doc "Whether any bootstrap activation code has been consumed. Used to short-circuit further bootstrap minting after bootstrap preauth."
+  @spec bootstrap_activation_code_consumed?() :: boolean()
+  def bootstrap_activation_code_consumed? do
+    Repo.exists?(
+      from code in ActivationCode,
+        where:
+          not is_nil(code.used_at) and
+            fragment("? ->> ?", code.metadata, ^@bootstrap_metadata_key) == "true",
+        select: 1
+    )
+  end
+
+  @doc """
+  Whether an unused, unrevoked, unexpired bootstrap code exists.
+
+  Distinct from `bootstrap_activation_code_consumed?/0`: a fresh DB has
+  `pending? = true` and `consumed? = false`; after bootstrap preauth
+  consumes the code, both flip.
+  """
+  @spec bootstrap_activation_code_pending?() :: boolean()
+  def bootstrap_activation_code_pending? do
+    now = utc_now()
+
+    Repo.exists?(
+      from code in ActivationCode,
+        where:
+          is_nil(code.used_at) and is_nil(code.revoked_at) and code.expires_at > ^now and
+            fragment("? ->> ?", code.metadata, ^@bootstrap_metadata_key) == "true",
+        select: 1
+    )
+  end
+
+  @doc """
+  Verify a plaintext bootstrap code and return its hash.
+
+  The hash is returned (rather than just `:ok`) so a later step can re-check
+  validity via `bootstrap_activation_code_valid_for_hash?/1` without
+  repeating the argon2 cost.
+  """
+  @spec verify_bootstrap_activation_code(String.t()) ::
+          {:ok, String.t()} | {:error, :invalid_or_expired_code}
+  def verify_bootstrap_activation_code(plaintext) when is_binary(plaintext) do
+    now = utc_now()
+
+    candidates =
+      Repo.all(
+        from code in ActivationCode,
+          where:
+            is_nil(code.used_at) and is_nil(code.revoked_at) and code.expires_at > ^now and
+              fragment("? ->> ?", code.metadata, ^@bootstrap_metadata_key) == "true",
+          order_by: [asc: code.inserted_at],
+          select: code.code_hash
+      )
+
+    case Enum.find(candidates, &Code.verified?(plaintext, &1)) do
+      nil -> {:error, :invalid_or_expired_code}
+      hash -> {:ok, hash}
+    end
+  end
+
+  @doc "Whether the given `code_hash` still names a usable bootstrap code. Pair with `verify_bootstrap_activation_code/1` to verify once and consume later."
+  @spec bootstrap_activation_code_valid_for_hash?(String.t() | nil) :: boolean()
+  def bootstrap_activation_code_valid_for_hash?(code_hash) when is_binary(code_hash) do
+    now = utc_now()
+
+    Repo.exists?(
+      from code in ActivationCode,
+        where:
+          code.code_hash == ^code_hash and is_nil(code.used_at) and is_nil(code.revoked_at) and
+            code.expires_at > ^now and
+            fragment("? ->> ?", code.metadata, ^@bootstrap_metadata_key) == "true",
+        select: 1
+    )
+  end
+
+  def bootstrap_activation_code_valid_for_hash?(_code_hash), do: false
+
+  @doc """
+  Mint or rotate the bootstrap activation code under a Postgres advisory lock.
+
+  The lock prevents concurrent boot attempts (e.g. simultaneous releases)
+  from producing duplicate bootstrap codes. Returns `:created` for a fresh
+  code, `:refreshed` when an existing unused code's secret was rotated.
+  Errors with `:bootstrap_not_required` (users exist) or
+  `:bootstrap_already_consumed`.
+  """
+  @spec create_or_refresh_bootstrap_activation_code() ::
+          {:ok,
+           %{code: String.t(), activation_code: ActivationCode.t(), action: :created | :refreshed}}
+          | {:error, term()}
+  def create_or_refresh_bootstrap_activation_code do
+    transaction(fn ->
+      :ok = lock_bootstrap_activation_code!()
+
+      cond do
+        not setup_required?() -> {:error, :bootstrap_not_required}
+        bootstrap_activation_code_consumed?() -> {:error, :bootstrap_already_consumed}
+        true -> create_or_refresh_bootstrap_activation_code_in_transaction()
+      end
+    end)
+  end
+
+  @doc """
+  Read-only lookup from a Gateway channel actor to a user.
+
+  Errors with `:not_bound` when the actor has no binding — does **not**
+  auto-create. Use `match_or_create_from_channel/1` or
+  `login_from_provider/1` when binding-on-first-contact is desired.
+  """
   @spec resolve_channel_actor(atom() | String.t(), String.t(), String.t()) ::
           {:ok, User.t()} | {:error, :not_bound} | {:error, :user_banned}
   def resolve_channel_actor(adapter, channel_id, external_id) do
@@ -31,6 +165,14 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Resolve a session's stored `user_id` (typically from a signed cookie) to
+  an active user.
+
+  Banned users are rejected with `:user_banned` rather than `:not_found` so
+  the session layer can clear the session deliberately rather than treating
+  it as a stale id.
+  """
   @spec fetch_session_user(String.t() | nil) ::
           {:ok, User.t()} | {:error, :not_found} | {:error, :user_banned}
   def fetch_session_user(nil), do: {:error, :not_found}
@@ -44,6 +186,13 @@ defmodule BullXAccounts.AuthN do
 
   def fetch_session_user(_user_id), do: {:error, :not_found}
 
+  @doc """
+  Toggle a user's `status` between `:active` and `:banned`.
+
+  Invalidates the entire AuthZ decision/group cache on success — banning a
+  user takes effect on the next authorize call rather than waiting for cache
+  TTL expiry.
+  """
   @spec update_user_status(User.t() | Ecto.UUID.t(), :active | :banned) ::
           {:ok, User.t()} | {:error, :not_found} | {:error, Ecto.Changeset.t()}
   def update_user_status(%User{} = user, status) when status in [:active, :banned] do
@@ -75,6 +224,21 @@ defmodule BullXAccounts.AuthN do
 
   def update_user_status(_user, _status), do: {:error, :not_found}
 
+  @doc """
+  Bind, look up, or auto-create a user from a Gateway channel actor.
+
+  Dispatch is rule-driven (`accounts.authn.match_rules`):
+
+    1. Already-bound actor → returns the existing user.
+    2. `bind_existing_user` rule matches → bind the channel to that user.
+    3. `allow_create_user` rule matches **and** `auto_create_users` is on
+       → create a new user.
+    4. Otherwise → `:activation_required`, so the caller can prompt for an
+       activation code (then `consume_activation_code/2`).
+
+  Banned matched users always error with `:user_banned`; matching never
+  re-binds to them.
+  """
   @spec match_or_create_from_channel(map()) ::
           {:ok, User.t(), UserChannelBinding.t()}
           | {:error, :activation_required}
@@ -92,6 +256,14 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Authenticate a returning user via an OAuth/OIDC-style provider channel.
+
+  Differs from `match_or_create_from_channel/1` in that an unmatched, unbound
+  actor errors with `:not_bound` rather than `:activation_required` —
+  provider flows assume the upstream IdP is the source of truth and there
+  is no "send me an activation code" affordance.
+  """
   @spec login_from_provider(map()) ::
           {:ok, User.t(), UserChannelBinding.t()}
           | {:error, :not_bound}
@@ -109,6 +281,14 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Mint a new activation code and persist its argon2 hash.
+
+  The plaintext code is returned in the result so the caller can deliver it
+  once; it is unrecoverable from the database afterwards. `metadata` is
+  caller-defined provenance (e.g. inviter, channel of issuance) and is
+  preserved into the `consumed` block when the code is later used.
+  """
   @spec create_activation_code(User.t() | nil, map()) ::
           {:ok, %{code: String.t(), activation_code: ActivationCode.t()}}
           | {:error, Ecto.Changeset.t()}
@@ -134,6 +314,13 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Revoke an unused activation code.
+
+  Already-used, already-revoked, and expired codes are not distinguished
+  from genuinely missing ids — all return `{:error, :not_found}`. Callers
+  needing finer reasons should query the row before revoking.
+  """
   @spec revoke_activation_code(ActivationCode.t() | String.t()) ::
           {:ok, ActivationCode.t()} | {:error, :not_found}
   def revoke_activation_code(%ActivationCode{id: id}), do: revoke_activation_code(id)
@@ -157,6 +344,21 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Trade an activation code for a `(user, channel_binding)` pair.
+
+  Three-step in-transaction logic:
+
+    1. If the channel actor is already bound, fail with `:already_bound`.
+       The code is **not** consumed.
+    2. Otherwise, run the standard match rules first — if they bind or
+       auto-create successfully, the code is left untouched.
+    3. Only when no rule applies do we verify the plaintext code, mark it
+       used, and create the user + binding.
+
+  A holder of a valid activation code may end up bound to an existing user
+  (step 2) without "spending" the code.
+  """
   @spec consume_activation_code(String.t(), map()) ::
           {:ok, User.t(), UserChannelBinding.t()}
           | {:error, :invalid_or_expired_code}
@@ -169,6 +371,14 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Issue a one-time web auth code for an already-bound channel actor.
+
+  The plaintext is returned once and meant to be relayed back to the user
+  through their channel (e.g. a chat DM). The web client redeems it via
+  `consume_user_channel_auth_code/1`. Codes are short-lived (configurable
+  TTL) and consumed exactly once.
+  """
   @spec issue_user_channel_auth_code(atom() | String.t(), String.t(), String.t()) ::
           {:ok, String.t()} | {:error, :not_bound} | {:error, :user_banned} | {:error, term()}
   def issue_user_channel_auth_code(adapter, channel_id, external_id) do
@@ -183,6 +393,12 @@ defmodule BullXAccounts.AuthN do
     end
   end
 
+  @doc """
+  Redeem a web auth code (from `issue_user_channel_auth_code/3`) for its user.
+
+  The code row is deleted on success — codes are strictly single-use.
+  Banned users fail with `:user_banned` even given a valid code.
+  """
   @spec consume_user_channel_auth_code(String.t()) ::
           {:ok, User.t()} | {:error, :invalid_or_expired_code} | {:error, :user_banned}
   def consume_user_channel_auth_code(plaintext_code) when is_binary(plaintext_code) do
@@ -256,8 +472,10 @@ defmodule BullXAccounts.AuthN do
 
       :none ->
         with {:ok, activation_code} <- find_valid_activation_code(plaintext_code),
-             :ok <- mark_activation_code_used(activation_code, input) do
-          create_user_and_binding(input)
+             :ok <- mark_activation_code_used(activation_code, input),
+             {:ok, user, binding} <- create_user_and_binding(input),
+             :ok <- maybe_grant_bootstrap_admin(activation_code, user) do
+          {:ok, user, binding}
         end
 
       {:error, reason} ->
@@ -283,6 +501,18 @@ defmodule BullXAccounts.AuthN do
 
   defp activation_required_to_none({:error, :activation_required}), do: :none
   defp activation_required_to_none(result), do: result
+
+  defp maybe_grant_bootstrap_admin(%ActivationCode{} = activation_code, %User{} = user) do
+    case bootstrap_activation_code?(activation_code) do
+      true -> AuthZ.grant_bootstrap_admin(user)
+      false -> :ok
+    end
+  end
+
+  defp bootstrap_activation_code?(%ActivationCode{metadata: metadata}) do
+    metadata = normalize_metadata(metadata)
+    metadata[@bootstrap_metadata_key] == true
+  end
 
   defp evaluate_match_rules(input) do
     AccountsConfig.accounts_authn_match_rules!()
@@ -460,6 +690,90 @@ defmodule BullXAccounts.AuthN do
       nil -> {:error, :invalid_or_expired_code}
       activation_code -> {:ok, activation_code}
     end
+  end
+
+  defp fetch_unused_bootstrap_activation_code do
+    Repo.one(
+      from code in ActivationCode,
+        where:
+          is_nil(code.used_at) and is_nil(code.revoked_at) and
+            fragment("? ->> ?", code.metadata, ^@bootstrap_metadata_key) == "true",
+        order_by: [asc: code.inserted_at],
+        limit: 1,
+        lock: "FOR UPDATE"
+    )
+  end
+
+  defp lock_bootstrap_activation_code! do
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "SELECT pg_advisory_xact_lock($1::integer, $2::integer)",
+      [@bootstrap_activation_code_lock_namespace, @bootstrap_activation_code_lock_id]
+    )
+
+    :ok
+  end
+
+  defp create_or_refresh_bootstrap_activation_code_in_transaction do
+    case fetch_unused_bootstrap_activation_code() do
+      nil -> create_bootstrap_activation_code()
+      %ActivationCode{} = existing -> refresh_bootstrap_activation_code(existing)
+    end
+  end
+
+  defp create_bootstrap_activation_code do
+    plaintext = Code.activation_code()
+
+    with {:ok, code_hash} <- Code.hash(plaintext) do
+      attrs = %{
+        code_hash: code_hash,
+        expires_at: expires_at(AccountsConfig.accounts_activation_code_ttl_seconds!()),
+        created_by_user_id: nil,
+        metadata: %{@bootstrap_metadata_key => true}
+      }
+
+      %ActivationCode{}
+      |> ActivationCode.changeset(attrs)
+      |> Repo.insert()
+      |> case do
+        {:ok, activation_code} ->
+          {:ok, %{code: plaintext, activation_code: activation_code, action: :created}}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end
+  end
+
+  defp refresh_bootstrap_activation_code(%ActivationCode{} = existing) do
+    plaintext = Code.activation_code()
+    now = utc_now()
+
+    with {:ok, code_hash} <- Code.hash(plaintext) do
+      attrs = %{
+        code_hash: code_hash,
+        expires_at: expires_at(AccountsConfig.accounts_activation_code_ttl_seconds!()),
+        metadata: refreshed_bootstrap_metadata(existing.metadata, now)
+      }
+
+      existing
+      |> ActivationCode.changeset(attrs)
+      |> Repo.update()
+      |> case do
+        {:ok, activation_code} ->
+          {:ok, %{code: plaintext, activation_code: activation_code, action: :refreshed}}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
+    end
+  end
+
+  defp refreshed_bootstrap_metadata(metadata, now) do
+    metadata
+    |> normalize_metadata()
+    |> Map.put(@bootstrap_metadata_key, true)
+    |> Map.put("refreshed_at", DateTime.to_iso8601(now))
   end
 
   defp valid_activation_codes_query(query, now) do

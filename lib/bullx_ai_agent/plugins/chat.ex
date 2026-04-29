@@ -1,7 +1,6 @@
 # Ensure actions are compiled before the plugin
 require BullXAIAgent.Actions.LLM.Chat
 require BullXAIAgent.Actions.LLM.Complete
-require BullXAIAgent.Actions.LLM.Embed
 require BullXAIAgent.Actions.LLM.GenerateObject
 require BullXAIAgent.Actions.ToolCalling.CallWithTools
 require BullXAIAgent.Actions.ToolCalling.ExecuteTool
@@ -16,14 +15,13 @@ defmodule BullXAIAgent.Plugins.Chat do
   - `chat.message` -> `BullXAIAgent.Actions.ToolCalling.CallWithTools`
   - `chat.simple` -> `BullXAIAgent.Actions.LLM.Chat`
   - `chat.complete` -> `BullXAIAgent.Actions.LLM.Complete`
-  - `chat.embed` -> `BullXAIAgent.Actions.LLM.Embed`
   - `chat.generate_object` -> `BullXAIAgent.Actions.LLM.GenerateObject`
   - `chat.execute_tool` -> `BullXAIAgent.Actions.ToolCalling.ExecuteTool`
   - `chat.list_tools` -> `BullXAIAgent.Actions.ToolCalling.ListTools`
 
   ## Mount State Defaults
 
-  - `default_model`: `:capable`
+  - `default_model`: `:default`
   - `default_max_tokens`: `4096`
   - `default_temperature`: `0.7`
   - `default_system_prompt`: `nil`
@@ -48,7 +46,6 @@ defmodule BullXAIAgent.Plugins.Chat do
       BullXAIAgent.Actions.ToolCalling.ListTools,
       BullXAIAgent.Actions.LLM.Chat,
       BullXAIAgent.Actions.LLM.Complete,
-      BullXAIAgent.Actions.LLM.Embed,
       BullXAIAgent.Actions.LLM.GenerateObject
     ],
     description: "Provides conversational AI with built-in tool calling",
@@ -64,7 +61,7 @@ defmodule BullXAIAgent.Plugins.Chat do
     tools_map = ToolAdapter.to_action_map(tools)
 
     initial_state = %{
-      default_model: Map.get(config, :default_model, :capable),
+      default_model: Map.get(config, :default_model, :default),
       default_max_tokens: Map.get(config, :default_max_tokens, 4096),
       default_temperature: Map.get(config, :default_temperature, 0.7),
       default_system_prompt: Map.get(config, :default_system_prompt),
@@ -80,8 +77,7 @@ defmodule BullXAIAgent.Plugins.Chat do
 
   def schema do
     Zoi.object(%{
-      default_model:
-        Zoi.any(description: "Default model alias or model spec") |> Zoi.default(:capable),
+      default_model: Zoi.any(description: "Default model alias") |> Zoi.default(:default),
       default_max_tokens: Zoi.integer(description: "Default max tokens") |> Zoi.default(4096),
       default_temperature:
         Zoi.float(description: "Default sampling temperature") |> Zoi.default(0.7),
@@ -107,7 +103,6 @@ defmodule BullXAIAgent.Plugins.Chat do
       {"chat.message", BullXAIAgent.Actions.ToolCalling.CallWithTools},
       {"chat.simple", BullXAIAgent.Actions.LLM.Chat},
       {"chat.complete", BullXAIAgent.Actions.LLM.Complete},
-      {"chat.embed", BullXAIAgent.Actions.LLM.Embed},
       {"chat.generate_object", BullXAIAgent.Actions.LLM.GenerateObject},
       {"chat.execute_tool", BullXAIAgent.Actions.ToolCalling.ExecuteTool},
       {"chat.list_tools", BullXAIAgent.Actions.ToolCalling.ListTools}
@@ -125,7 +120,6 @@ defmodule BullXAIAgent.Plugins.Chat do
       "chat.message",
       "chat.simple",
       "chat.complete",
-      "chat.embed",
       "chat.generate_object",
       "chat.execute_tool",
       "chat.list_tools"

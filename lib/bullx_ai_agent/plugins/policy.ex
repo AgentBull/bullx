@@ -13,8 +13,8 @@ defmodule BullXAIAgent.Plugins.Policy do
 
   ## Rewrite Semantics
 
-  For enforceable signal types (`chat.*`, `ai.*.query`, and
-  `reasoning.*.run`), the plugin validates prompt/query text with
+  For enforceable signal types (`chat.*` and `ai.agentic_loop.query`), the
+  plugin validates prompt/query text with
   `BullXAIAgent.Validation.validate_prompt/1`.
 
   Validation failures are rewritten to `ai.request.error` with:
@@ -50,14 +50,7 @@ defmodule BullXAIAgent.Plugins.Policy do
     "chat.simple",
     "chat.complete",
     "chat.generate_object",
-    "ai.react.query",
-    "ai.cod.query",
-    "ai.aot.query",
-    "ai.cot.query",
-    "ai.tot.query",
-    "ai.got.query",
-    "ai.trm.query",
-    "ai.adaptive.query"
+    "ai.agentic_loop.query"
   ]
 
   @impl true
@@ -111,8 +104,7 @@ defmodule BullXAIAgent.Plugins.Policy do
   end
 
   defp enforceable_request_signal?(type) when is_binary(type) do
-    type in @enforceable_request_signals or
-      (String.starts_with?(type, "reasoning.") and String.ends_with?(type, ".run"))
+    type in @enforceable_request_signals
   end
 
   defp enforceable_request_signal?(_), do: false

@@ -8,7 +8,7 @@ defmodule BullXAIAgent.Actions.ToolCalling.CallWithTools do
 
   ## Parameters
 
-  * `model` (optional) - Model alias (e.g., `:capable`) or direct spec
+  * `model` (optional) - Model alias (e.g., `:default`) or direct spec
   * `prompt` (required) - The user prompt to send to the LLM
   * `system_prompt` (optional) - System prompt to guide behavior
   * `tools` (optional) - List of tool names to include (default: all registered)
@@ -42,7 +42,7 @@ defmodule BullXAIAgent.Actions.ToolCalling.CallWithTools do
     schema:
       Zoi.object(%{
         model:
-          Zoi.any(description: "Model alias (e.g., :capable) or direct spec string")
+          Zoi.any(description: "Model alias (e.g., :default) or direct spec string")
           |> Zoi.optional(),
         prompt: Zoi.string(description: "The user prompt to send to the LLM"),
         system_prompt:
@@ -82,10 +82,9 @@ defmodule BullXAIAgent.Actions.ToolCalling.CallWithTools do
          execution_tools = resolve_execution_tools(validated_params[:tools], context),
          opts = build_opts(validated_params),
          {:ok, response} <-
-           ReqLLM.Generation.generate_text(
-             model,
-             llm_context.messages,
-             Keyword.put(opts, :tools, tools)
+           BullXAIAgent.generate_text(llm_context.messages,
+             model: model,
+             opts: Keyword.put(opts, :tools, tools)
            ) do
       turn = classify_and_format_response(response, model)
 
@@ -110,9 +109,8 @@ defmodule BullXAIAgent.Actions.ToolCalling.CallWithTools do
 
   # Private Functions
 
-  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:capable)}
+  defp resolve_model(nil), do: {:ok, BullXAIAgent.resolve_model(:default)}
   defp resolve_model(model) when is_atom(model), do: {:ok, BullXAIAgent.resolve_model(model)}
-  defp resolve_model(model) when is_binary(model), do: {:ok, model}
   defp resolve_model(_), do: {:error, :invalid_model_format}
 
   defp build_messages(prompt, nil) do
@@ -283,7 +281,7 @@ defmodule BullXAIAgent.Actions.ToolCalling.CallWithTools do
       turn_opts = opts |> Keyword.put(:tools, llm_tools)
 
       # Call LLM again with tool results
-      case ReqLLM.Generation.generate_text(model, updated_messages, turn_opts) do
+      case BullXAIAgent.generate_text(updated_messages, model: model, opts: turn_opts) do
         {:ok, response} ->
           next_turn = classify_and_format_response(response, model)
           next_messages = append_assistant_message(updated_messages, next_turn)

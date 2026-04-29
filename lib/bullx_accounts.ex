@@ -15,6 +15,11 @@ defmodule BullXAccounts do
   ## AuthN
 
   defdelegate setup_required?(), to: AuthN
+  defdelegate bootstrap_activation_code_consumed?(), to: AuthN
+  defdelegate bootstrap_activation_code_pending?(), to: AuthN
+  defdelegate bootstrap_activation_code_valid_for_hash?(code_hash), to: AuthN
+  defdelegate create_or_refresh_bootstrap_activation_code(), to: AuthN
+  defdelegate verify_bootstrap_activation_code(plaintext), to: AuthN
   defdelegate resolve_channel_actor(adapter, channel_id, external_id), to: AuthN
   defdelegate fetch_session_user(user_id), to: AuthN
   defdelegate match_or_create_from_channel(input), to: AuthN

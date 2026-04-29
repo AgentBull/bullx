@@ -24,7 +24,7 @@ defmodule FeishuOpenAPI.WS.ClientTest do
 
     wait_until(fn ->
       state = :sys.get_state(pid)
-      state.status == :disconnected and not is_nil(state.reconnect_timer)
+      Client.status(pid) == :disconnected and not is_nil(state.reconnect_timer)
     end)
 
     ref = make_ref()

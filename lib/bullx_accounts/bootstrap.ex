@@ -3,12 +3,11 @@ defmodule BullXAccounts.Bootstrap do
 
   use Task
 
-  import Ecto.Query
-
   require Logger
 
   alias BullX.Repo
-  alias BullXAccounts.ActivationCode
+
+  @bootstrap_activation_banner_line String.duplicate("=", 80)
 
   def start_link(_opts), do: Task.start_link(__MODULE__, :run, [])
 
@@ -20,41 +19,32 @@ defmodule BullXAccounts.Bootstrap do
 
   def run do
     case authn_tables_ready?() do
-      true -> maybe_create_bootstrap_activation_code()
+      true -> maybe_create_or_refresh_bootstrap_activation_code()
       false -> Logger.warning("BullXAccounts bootstrap skipped because AuthN tables do not exist")
     end
   end
 
-  defp maybe_create_bootstrap_activation_code do
-    case {BullXAccounts.setup_required?(), valid_activation_code_exists?()} do
-      {true, false} ->
-        create_and_log_bootstrap_activation_code()
-
-      _ready_or_code_exists ->
-        :ok
+  defp maybe_create_or_refresh_bootstrap_activation_code do
+    cond do
+      not BullXAccounts.setup_required?() -> :ok
+      BullXAccounts.bootstrap_activation_code_consumed?() -> :ok
+      true -> create_or_refresh_and_log()
     end
   end
 
-  defp create_and_log_bootstrap_activation_code do
-    case BullXAccounts.create_activation_code(nil, %{source: "bootstrap"}) do
-      {:ok, %{code: code}} ->
-        Logger.warning("BullX bootstrap activation code: #{code}")
+  defp create_or_refresh_and_log do
+    case BullXAccounts.create_or_refresh_bootstrap_activation_code() do
+      {:ok, %{code: code, action: action}} when action in [:created, :refreshed] ->
+        log_bootstrap_activation_code(code, action)
+
+      {:error, reason} when reason in [:bootstrap_not_required, :bootstrap_already_consumed] ->
+        :ok
 
       {:error, reason} ->
         Logger.warning(
           "BullXAccounts bootstrap activation code creation failed: #{inspect(reason)}"
         )
     end
-  end
-
-  defp valid_activation_code_exists? do
-    now = DateTime.utc_now()
-
-    Repo.exists?(
-      from code in ActivationCode,
-        where: is_nil(code.revoked_at) and is_nil(code.used_at) and code.expires_at > ^now,
-        select: 1
-    )
   end
 
   defp authn_tables_ready? do
@@ -83,5 +73,21 @@ defmodule BullXAccounts.Bootstrap do
   defp log_table_check_error(reason) do
     Logger.warning("BullXAccounts bootstrap table check failed: #{inspect(reason)}")
     false
+  end
+
+  defp log_bootstrap_activation_code(code, action) do
+    Logger.warning(
+      IO.iodata_to_binary([
+        "\n\n",
+        @bootstrap_activation_banner_line,
+        "\n BullX bootstrap activation code (",
+        Atom.to_string(action),
+        "): ",
+        code,
+        "\n",
+        @bootstrap_activation_banner_line,
+        "\n\n"
+      ])
+    )
   end
 end

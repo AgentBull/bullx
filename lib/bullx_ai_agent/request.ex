@@ -47,8 +47,8 @@ defmodule BullXAIAgent.Request do
     # ask/2 now returns {:ok, Handle.t()}
     def ask(pid, query, opts \\\\ []) do
       BullXAIAgent.Request.create_and_send(pid, query, opts,
-        signal_type: "ai.react.query",
-        source: "/ai/react/agent"
+        signal_type: "ai.agentic_loop.query",
+        source: "/ai/agentic_loop/agent"
       )
     end
 
@@ -159,28 +159,28 @@ defmodule BullXAIAgent.Request do
   ## Options
 
   - `:tool_context` - Additional context merged with agent's tool_context
-  - `:tools` - ReAct-only request-scoped tool registry override for this run
-  - `:allowed_tools` - ReAct-only request-scoped allowlist of tool names
-  - `:request_transformer` - ReAct-only module implementing per-turn request shaping
-  - `:stream_timeout_ms` - ReAct-only request-scoped runtime inactivity timeout.
+  - `:tools` - AgenticLoop-only request-scoped tool registry override for this run
+  - `:allowed_tools` - AgenticLoop-only request-scoped allowlist of tool names
+  - `:request_transformer` - AgenticLoop-only module implementing per-turn request shaping
+  - `:stream_timeout_ms` - AgenticLoop-only request-scoped runtime inactivity timeout.
     `:stream_receive_timeout_ms` is accepted as a compatibility alias.
-  - `:req_http_options` - Per-request Req HTTP options forwarded to ReAct runtime
-  - `:llm_opts` - Per-request ReqLLM generation options forwarded to ReAct runtime
+  - `:req_http_options` - Per-request Req HTTP options forwarded to AgenticLoop runtime
+  - `:llm_opts` - Per-request ReqLLM generation options forwarded to AgenticLoop runtime
   - `:extra_refs` - Map of additional refs to attach to the user message thread entry
   - `:stream_to` - Optional request-scoped runtime event sink, currently `{:pid, pid}`
   - `:request_id` - Custom request ID (auto-generated if not provided)
 
   ## Signal Options (required)
 
-  - `:signal_type` - The signal type to create (e.g., "ai.react.query")
-  - `:source` - The signal source (e.g., "/ai/react/agent")
+  - `:signal_type` - The signal type to create (e.g., "ai.agentic_loop.query")
+  - `:source` - The signal source (e.g., "/ai/agentic_loop/agent")
 
   ## Examples
 
       {:ok, request} = Request.create_and_send(pid, "What is 2+2?",
         tool_context: %{actor: user},
-        signal_type: "ai.react.query",
-        source: "/ai/react/agent"
+        signal_type: "ai.agentic_loop.query",
+        source: "/ai/agentic_loop/agent"
       )
   """
   @spec create_and_send(server(), String.t(), keyword()) ::
@@ -245,8 +245,8 @@ defmodule BullXAIAgent.Request do
 
       {:ok, result} = Request.send_and_await(pid, "What is 2+2?",
         timeout: 10_000,
-        signal_type: "ai.react.query",
-        source: "/ai/react/agent"
+        signal_type: "ai.agentic_loop.query",
+        source: "/ai/agentic_loop/agent"
       )
   """
   @spec send_and_await(server(), String.t(), keyword()) ::
@@ -367,7 +367,7 @@ defmodule BullXAIAgent.Request do
 
   ## Examples
 
-      def on_before_cmd(agent, {:ai_react_start, %{query: query, request_id: req_id}} = action) do
+      def on_before_cmd(agent, {:ai_agentic_loop_start, %{query: query, request_id: req_id}} = action) do
         agent = Request.start_request(agent, req_id, query)
         {:ok, agent, action}
       end
@@ -408,7 +408,7 @@ defmodule BullXAIAgent.Request do
 
   ## Examples
 
-      def on_after_cmd(agent, {:ai_react_start, %{request_id: req_id}}, directives) do
+      def on_after_cmd(agent, {:ai_agentic_loop_start, %{request_id: req_id}}, directives) do
         snap = strategy_snapshot(agent)
         if snap.done? do
           agent = Request.complete_request(agent, req_id, snap.result)

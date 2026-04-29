@@ -3,7 +3,7 @@
   "scripts": {
     "setup": "mix deps.get && mix ecto.setup && bun install && mix assets.build",
     "dev": "iex -S mix phx.server",
-    "rsbuild:dev": "bun --bun rsbuild dev",
+    "rsbuild:dev": "bun --bun rsbuild dev --log-level warn",
     "build": "bun --bun rsbuild build",
     "fmt": "mix format && cargo fmt --all",
     "fmt:check": "mix format --check-formatted && cargo fmt --all --check",
@@ -28,6 +28,7 @@
     "clsx": "^2.1.1",
     "i18next": "^26.0.8",
     "input-otp": "^1.4.2",
+    "json-edit-react": "^1.29.0",
     "messageformat": "^4.0.0",
     "next-themes": "^0.4.6",
     "react": "^19.2.5",

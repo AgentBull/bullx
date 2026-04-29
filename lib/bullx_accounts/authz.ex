@@ -1,5 +1,25 @@
 defmodule BullXAccounts.AuthZ do
-  @moduledoc false
+  @moduledoc """
+  AuthZ implementation for `BullXAccounts`.
+
+  Provides authorization decisions, user-group management, and
+  permission-grant CRUD. Public callers should go through the
+  `BullXAccounts` facade.
+
+  A decision is computed from three inputs:
+
+    * **Static groups** — explicit `user_group_memberships` rows.
+    * **Computed groups** — `user_groups` of type `:computed` whose
+      `computed_expression` evaluates to true for the user at decision time.
+    * **Permission grants** — IAM-style rows scoped to a single user **or**
+      a single group, matched by exact action equality + resource pattern,
+      then filtered by a Cedar `condition` expression evaluated against the
+      request context.
+
+  Decisions and group expansions are cached in ETS via
+  `BullXAccounts.AuthZ.Cache`; every write path through this module
+  invalidates the entire cache.
+  """
 
   import Ecto.Query
 
@@ -19,6 +39,23 @@ defmodule BullXAccounts.AuthZ do
 
   ## Authorization
 
+  @doc """
+  Decide whether `user` may perform `action` on `resource`, optionally with
+  request `context`.
+
+  Returns:
+
+    * `:ok` — allow.
+    * `{:error, :forbidden}` — no grant matched, or all matching grants
+      denied.
+    * `{:error, :user_banned}` — principal is banned (regardless of grants).
+    * `{:error, :not_found}` — the user disappeared between resolution
+      and authorization.
+    * `{:error, :invalid_request}` — any argument failed to normalize.
+
+  Each unique `(user_id, resource, action, context)` decision is cached;
+  context equality is by canonical hash so map ordering does not matter.
+  """
   @spec authorize(User.t() | Ecto.UUID.t() | nil, String.t(), String.t(), map()) ::
           :ok
           | {:error, :forbidden}
@@ -32,6 +69,14 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc """
+  Convenience wrapper over `authorize/4` taking a single `"resource:action"`
+  permission key.
+
+  The key is split on the **last** `:` — resource ids may themselves contain
+  `:` (e.g. `"app:foo:read"` resolves to resource `"app:foo"`, action
+  `"read"`). A key without any `:` is `:invalid_request`.
+  """
   @spec authorize_permission(User.t() | Ecto.UUID.t() | nil, String.t(), map()) ::
           :ok
           | {:error, :forbidden}
@@ -44,11 +89,43 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc """
+  Boolean form of `authorize/4`.
+
+  Returns `false` for any non-`:ok` result, including bans and invalid
+  requests — use `authorize/4` directly when error reasons matter.
+  """
   @spec allowed?(User.t() | Ecto.UUID.t() | nil, String.t(), String.t(), map()) :: boolean()
   def allowed?(user, resource, action, context \\ %{}) do
     case authorize(user, resource, action, context) do
       :ok -> true
       _other -> false
+    end
+  end
+
+  @doc false
+  @spec ensure_built_in_admin_group() ::
+          {:ok, UserGroup.t(), :created | :existing}
+          | {:error, {:conflicting_admin_group, UserGroup.t()}}
+          | {:error, Ecto.Changeset.t()}
+  def ensure_built_in_admin_group do
+    case Repo.get_by(UserGroup, name: @admin_group_name) do
+      nil -> create_built_in_admin_group()
+      %UserGroup{type: :static, built_in: true} = group -> {:ok, group, :existing}
+      %UserGroup{} = group -> {:error, {:conflicting_admin_group, group}}
+    end
+  end
+
+  @doc false
+  @spec grant_bootstrap_admin(User.t()) ::
+          :ok
+          | {:error, {:conflicting_admin_group, UserGroup.t()}}
+          | {:error, :not_found}
+          | {:error, :computed_group}
+          | {:error, Ecto.Changeset.t()}
+  def grant_bootstrap_admin(%User{} = user) do
+    with {:ok, group, _action} <- ensure_built_in_admin_group() do
+      add_user_to_group(user, group)
     end
   end
 
@@ -63,6 +140,26 @@ defmodule BullXAccounts.AuthZ do
       nil -> {:error, :not_found}
       %User{status: :active} = user -> {:ok, user}
       %User{status: :banned} -> {:error, :user_banned}
+    end
+  end
+
+  defp create_built_in_admin_group do
+    attrs = %{
+      name: @admin_group_name,
+      type: :static,
+      description: "Built-in administrators group.",
+      built_in: true
+    }
+
+    case %UserGroup{}
+         |> UserGroup.system_create_changeset(attrs)
+         |> Repo.insert() do
+      {:ok, group} ->
+        Cache.invalidate_all()
+        {:ok, group, :created}
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -137,6 +234,12 @@ defmodule BullXAccounts.AuthZ do
 
   ## Group expansion
 
+  @doc """
+  List all groups the user currently belongs to, both static and computed.
+
+  Computed-group membership is re-evaluated on each call (modulo cache) and
+  is never persisted as rows.
+  """
   @spec list_user_groups(User.t() | Ecto.UUID.t()) ::
           {:ok, [UserGroup.t()]} | {:error, :not_found}
   def list_user_groups(user_or_id) do
@@ -180,6 +283,7 @@ defmodule BullXAccounts.AuthZ do
 
   ## Group CRUD
 
+  @doc "Create a user group. Public callers cannot pass `built_in: true` — the changeset ignores it; only `BullXAccounts.AuthZ.Bootstrap` can mint built-in groups."
   @spec create_user_group(map()) :: {:ok, UserGroup.t()} | {:error, Ecto.Changeset.t()}
   def create_user_group(attrs) do
     case %UserGroup{}
@@ -194,6 +298,7 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc "Update a user group. `name`, `type`, and `built_in` are immutable here — only `description` and `computed_expression` can change."
   @spec update_user_group(UserGroup.t() | Ecto.UUID.t(), map()) ::
           {:ok, UserGroup.t()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
   def update_user_group(%UserGroup{} = group, attrs) do
@@ -215,6 +320,13 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc """
+  Delete a user group.
+
+  Errors with `:built_in_group` for system-managed groups (e.g. the `admin`
+  group) and `:group_in_use` when any other computed group's expression
+  references this group by name. Resolve those references before deleting.
+  """
   @spec delete_user_group(UserGroup.t() | Ecto.UUID.t()) ::
           :ok | {:error, :not_found} | {:error, :built_in_group} | {:error, :group_in_use}
   def delete_user_group(%UserGroup{built_in: true}), do: {:error, :built_in_group}
@@ -246,6 +358,13 @@ defmodule BullXAccounts.AuthZ do
 
   ## Membership
 
+  @doc """
+  Add a user to a static group.
+
+  Computed groups reject membership writes with `:computed_group` — their
+  membership is derived from the expression, not stored. Re-adding an
+  existing member is a no-op (`on_conflict: :nothing`).
+  """
   @spec add_user_to_group(User.t() | Ecto.UUID.t(), UserGroup.t() | Ecto.UUID.t()) ::
           :ok | {:error, :not_found} | {:error, :computed_group} | {:error, Ecto.Changeset.t()}
   def add_user_to_group(user_or_id, group_or_id) do
@@ -267,6 +386,13 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc """
+  Remove a user from a static group.
+
+  The built-in `admin` group is protected: removing the last admin errors
+  with `:last_admin_member`. The check runs under `SELECT ... FOR UPDATE`
+  on the group row to prevent two concurrent removals from racing past it.
+  """
   @spec remove_user_from_group(User.t() | Ecto.UUID.t(), UserGroup.t() | Ecto.UUID.t()) ::
           :ok
           | {:error, :not_found}
@@ -365,6 +491,14 @@ defmodule BullXAccounts.AuthZ do
 
   ## Permission grants
 
+  @doc """
+  Create a permission grant scoped to exactly one principal — either
+  `user_id` or `group_id`, never both (a DB check constraint enforces this
+  too).
+
+  The `condition` is parsed and validated as a Cedar boolean expression at
+  write time; invalid conditions are rejected before persistence.
+  """
   @spec create_permission_grant(map()) ::
           {:ok, PermissionGrant.t()} | {:error, Ecto.Changeset.t()}
   def create_permission_grant(attrs) do
@@ -380,6 +514,7 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc "Update a permission grant. Same single-principal exclusivity and Cedar-condition validation as `create_permission_grant/1`."
   @spec update_permission_grant(PermissionGrant.t() | Ecto.UUID.t(), map()) ::
           {:ok, PermissionGrant.t()} | {:error, Ecto.Changeset.t()} | {:error, :not_found}
   def update_permission_grant(%PermissionGrant{} = grant, attrs) do
@@ -401,6 +536,7 @@ defmodule BullXAccounts.AuthZ do
     end
   end
 
+  @doc "Delete a permission grant."
   @spec delete_permission_grant(PermissionGrant.t() | Ecto.UUID.t()) ::
           :ok | {:error, :not_found}
   def delete_permission_grant(%PermissionGrant{} = grant) do

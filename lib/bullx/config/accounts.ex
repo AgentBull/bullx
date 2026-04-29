@@ -56,12 +56,9 @@ defmodule BullX.Config.Accounts.MatchRules do
          {:ok, user_field} <- required_string(rule, "user_field"),
          true <- user_field in @user_fields do
       {:ok,
-       %{
-         "result" => @bind_result,
-         "op" => "equals_user_field",
-         "source_path" => source_path,
-         "user_field" => user_field
-       }}
+       source_path
+       |> base_bind_rule(user_field)
+       |> maybe_put_managed_by(rule)}
     else
       _ -> :error
     end
@@ -71,12 +68,9 @@ defmodule BullX.Config.Accounts.MatchRules do
     with {:ok, source_path} <- required_string(rule, "source_path"),
          {:ok, domains} <- required_string_list(rule, "domains") do
       {:ok,
-       %{
-         "result" => @create_result,
-         "op" => "email_domain_in",
-         "source_path" => source_path,
-         "domains" => Enum.map(domains, &String.downcase/1)
-       }}
+       source_path
+       |> base_email_domain_rule(domains)
+       |> maybe_put_managed_by(rule)}
     else
       _ -> :error
     end
@@ -86,16 +80,47 @@ defmodule BullX.Config.Accounts.MatchRules do
     with {:ok, source_path} <- required_string(rule, "source_path"),
          {:ok, values} <- required_string_list(rule, "values") do
       {:ok,
-       %{
-         "result" => @create_result,
-         "op" => "equals_any",
-         "source_path" => source_path,
-         "values" => values
-       }}
+       source_path
+       |> base_equals_any_rule(values)
+       |> maybe_put_managed_by(rule)}
     else
       _ -> :error
     end
   end
+
+  defp base_bind_rule(source_path, user_field) do
+    %{
+      "result" => @bind_result,
+      "op" => "equals_user_field",
+      "source_path" => source_path,
+      "user_field" => user_field
+    }
+  end
+
+  defp base_email_domain_rule(source_path, domains) do
+    %{
+      "result" => @create_result,
+      "op" => "email_domain_in",
+      "source_path" => source_path,
+      "domains" => Enum.map(domains, &String.downcase/1)
+    }
+  end
+
+  defp base_equals_any_rule(source_path, values) do
+    %{
+      "result" => @create_result,
+      "op" => "equals_any",
+      "source_path" => source_path,
+      "values" => values
+    }
+  end
+
+  defp maybe_put_managed_by(normalized, %{"managed_by" => managed_by})
+       when is_binary(managed_by) and managed_by != "" do
+    Map.put(normalized, "managed_by", managed_by)
+  end
+
+  defp maybe_put_managed_by(normalized, _rule), do: normalized
 
   defp required_string(rule, key) do
     case Map.fetch(rule, key) do
