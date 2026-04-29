@@ -1,4 +1,3 @@
-import React from "react"
 import { Head } from "@inertiajs/react"
 import { useTranslation } from "react-i18next"
 import { Button } from "@/uikit/components/button"
@@ -10,9 +9,25 @@ import {
   CardTitle,
 } from "@/uikit/components/card"
 
-const sections = ["sessions", "approvals", "observability"]
+const sections = ["sessions", "approvals", "observability"] as const
 
-export default function ControlPanelApp({ app_name, current_user, swagger_ui_path }) {
+interface CurrentUser {
+  id: string
+  display_name: string
+  email: string | null
+}
+
+interface ControlPanelAppProps {
+  app_name: string
+  current_user: CurrentUser
+  swagger_ui_path: string | null
+}
+
+export default function ControlPanelApp({
+  app_name,
+  current_user,
+  swagger_ui_path,
+}: ControlPanelAppProps) {
   const { t } = useTranslation()
 
   return (

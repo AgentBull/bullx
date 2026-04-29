@@ -282,6 +282,14 @@ defmodule BullXGateway do
     ScopeWorker.cancel_stream(delivery_id)
   end
 
+  @spec stream_supported?(Delivery.channel()) :: boolean()
+  def stream_supported?(channel) do
+    case lookup_channel(channel) do
+      {:ok, %{module: module}} -> adapter_supports_stream?(module)
+      {:error, _reason} -> false
+    end
+  end
+
   @spec replay_dead_letter(String.t()) ::
           {:ok, %{status: :replayed, delivery: Delivery.t()}} | {:error, :not_found | term()}
   def replay_dead_letter(dispatch_id) when is_binary(dispatch_id) do
@@ -375,6 +383,10 @@ defmodule BullXGateway do
       true ->
         {:capability_unsupported, {:op, delivery.op}}
     end
+  end
+
+  defp adapter_supports_stream?(module) do
+    function_exported?(module, :capabilities, 0) and :stream in module.capabilities()
   end
 
   defp sanitize(delivery, security_config, timeout_fallback, error_fallback) do

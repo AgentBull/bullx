@@ -47,12 +47,125 @@ import {
 import { Switch } from "@/uikit/components/switch"
 import SetupLayout from "../Layout"
 
-const ALIASES = ["default", "fast", "heavy", "compression"]
-const DEFAULT_ALIAS_TARGETS = {
+type Translate = (
+  key: string,
+  options?: { values?: Record<string, unknown>; defaultValue?: string },
+) => string
+
+type AliasName = "default" | "fast" | "heavy" | "compression"
+type SecretStatus = "missing" | "stored"
+
+const ALIASES: AliasName[] = ["default", "fast", "heavy", "compression"]
+const DEFAULT_ALIAS_TARGETS: Record<AliasName, AliasName> = {
+  default: "default",
   fast: "default",
   heavy: "default",
   compression: "fast",
 }
+
+interface ProviderOptionField {
+  key: string
+  label?: string
+  input_type?: "boolean" | "integer" | "float" | "string" | "select" | "json"
+  type?: string
+  options?: string[]
+  required?: boolean
+  default?: unknown
+  doc?: string
+}
+
+interface ProviderCatalogEntryInput {
+  id?: string
+  provider_id?: string
+  label?: string
+  default_base_url?: string
+  api_key_supported?: boolean
+  provider_options?: ProviderOptionField[]
+}
+
+interface ProviderCatalogEntry {
+  id: string
+  label: string
+  default_base_url: string
+  api_key_supported: boolean
+  provider_options: ProviderOptionField[]
+}
+
+interface ProviderRow {
+  id: string | null
+  name: string
+  provider_id: string
+  model_id: string
+  base_url: string
+  api_key: string
+  api_key_inherits_from: string | null
+  provider_options: Record<string, unknown>
+  secret_status: { api_key?: SecretStatus }
+}
+
+interface ProviderRowInput {
+  id?: string | null
+  name?: string
+  provider_id?: string
+  model_id?: string
+  base_url?: string
+  api_key?: string | null
+  api_key_inherits_from?: string | null
+  provider_options?: Record<string, unknown>
+  secret_status?: { api_key?: SecretStatus }
+}
+
+interface PreparedProvider {
+  id: string | null
+  name: string
+  provider_id: string
+  model_id: string
+  provider_options: Record<string, unknown>
+  provider_options_error?: string
+  provider_options_field_errors?: Array<{ field: string; error: string }>
+  base_url?: string
+  api_key?: string | null
+  api_key_inherits_from?: string
+}
+
+interface InheritSource extends ProviderRow {}
+
+interface AliasBinding {
+  kind: "" | "provider" | "alias" | "default" | "default_provider" | "fallback_provider"
+  target: string
+  source?: string
+  alias_name?: string
+}
+
+type AliasRows = Record<AliasName, AliasBinding>
+
+interface LLMError {
+  field?: string
+  message: string
+  kind?: string
+  details?: { field?: string; field_path?: string }
+}
+
+interface CheckSuccess {
+  status: "success"
+  result?: unknown
+}
+
+interface CheckFailure {
+  status: "error"
+  errors: LLMError[]
+}
+
+type CheckResult = CheckSuccess | CheckFailure
+type ChecksMap = Record<string, CheckResult | undefined>
+
+interface PostJsonResponse {
+  ok?: boolean
+  errors?: LLMError[]
+  redirect_to?: string
+  result?: unknown
+}
+
 const JSON_EDITOR_ICON_CLASS = "inline-flex size-6 items-center justify-center border border-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
 const JSON_EDITOR_DANGER_ICON_CLASS = "inline-flex size-6 items-center justify-center border border-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
 const JSON_EDITOR_ICONS = {
@@ -135,6 +248,15 @@ const JSON_EDITOR_THEME = {
   },
 }
 
+interface SetupLLMAppProps {
+  app_name: string
+  provider_id_catalog?: Array<string | ProviderCatalogEntryInput>
+  providers?: ProviderRowInput[]
+  alias_bindings?: AliasBinding[]
+  check_path: string
+  save_path: string
+}
+
 export default function SetupLLMApp({
   app_name,
   provider_id_catalog = [],
@@ -142,41 +264,44 @@ export default function SetupLLMApp({
   alias_bindings = [],
   check_path,
   save_path,
-}) {
+}: SetupLLMAppProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
   const providerCatalog = React.useMemo(
     () => normalizeProviderCatalog(provider_id_catalog),
     [provider_id_catalog],
   )
-  const [providerRows, setProviderRows] = React.useState(() => normalizeProviders(providers, providerCatalog))
-  const [aliasRows, setAliasRows] = React.useState(() => normalizeAliases(alias_bindings))
-  const [checks, setChecks] = React.useState({})
-  const [serverErrors, setServerErrors] = React.useState([])
-  const [checkingName, setCheckingName] = React.useState(null)
+  const [providerRows, setProviderRows] = React.useState<ProviderRow[]>(
+    () => normalizeProviders(providers, providerCatalog),
+  )
+  const [aliasRows, setAliasRows] = React.useState<AliasRows>(() => normalizeAliases(alias_bindings))
+  const [checks, setChecks] = React.useState<ChecksMap>({})
+  const [serverErrors, setServerErrors] = React.useState<LLMError[]>([])
+  const [checkingName, setCheckingName] = React.useState<string | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [sheetOpen, setSheetOpen] = React.useState(false)
-  const [editingIndex, setEditingIndex] = React.useState(null)
-  const [draft, setDraft] = React.useState(() => newProvider(providerCatalog))
-  const [draftErrors, setDraftErrors] = React.useState([])
+  const [editingIndex, setEditingIndex] = React.useState<number | null>(null)
+  const [draft, setDraft] = React.useState<ProviderRow>(() => newProvider(providerCatalog))
+  const [draftErrors, setDraftErrors] = React.useState<LLMError[]>([])
 
   const preparedProviders = React.useMemo(
     () => providerRows.map(provider => prepareProviderForSave(provider, providerCatalog)),
     [providerCatalog, providerRows],
   )
   const providerErrors = React.useMemo(
-    () => validateProviders(preparedProviders, t),
-    [preparedProviders, t],
+    () => validateProviders(preparedProviders, translate),
+    [preparedProviders, translate],
   )
   const aliasErrors = React.useMemo(
-    () => validateAliases(aliasRows, preparedProviders, t),
-    [aliasRows, preparedProviders, t],
+    () => validateAliases(aliasRows, preparedProviders, translate),
+    [aliasRows, preparedProviders, translate],
   )
   const canSave =
     preparedProviders.length > 0
     && providerErrors.length === 0
     && aliasErrors.length === 0
     && !saving
-  const inheritSources = React.useMemo(
+  const inheritSources = React.useMemo<InheritSource[]>(
     () => providerRows
       .map((row, index) => ({ ...row, name: preparedProviders[index]?.name || row.name }))
       .filter(row => row.id != null
@@ -184,7 +309,7 @@ export default function SetupLLMApp({
         && row.secret_status?.api_key === "stored"),
     [providerRows, preparedProviders],
   )
-  const liveDraftErrors = React.useMemo(() => {
+  const liveDraftErrors = React.useMemo<LLMError[]>(() => {
     if (!sheetOpen) return []
     const prepared = prepareProviderForSave(draft, providerCatalog)
     if (!prepared.name) return []
@@ -194,11 +319,11 @@ export default function SetupLLMApp({
     if (!taken.includes(prepared.name)) return []
     return [{
       field: "name",
-      message: t("web.setup.llm.errors.duplicate_provider", {
+      message: translate("web.setup.llm.errors.duplicate_provider", {
         values: { name: prepared.name },
       }),
     }]
-  }, [draft, providerRows, providerCatalog, editingIndex, sheetOpen, t])
+  }, [draft, providerRows, providerCatalog, editingIndex, sheetOpen, translate])
 
   const openNewSheet = () => {
     setEditingIndex(null)
@@ -207,7 +332,7 @@ export default function SetupLLMApp({
     setSheetOpen(true)
   }
 
-  const openEditSheet = (index) => {
+  const openEditSheet = (index: number) => {
     setEditingIndex(index)
     setDraft(editableProvider(providerRows[index]))
     setDraftErrors([])
@@ -216,14 +341,14 @@ export default function SetupLLMApp({
 
   const applyDraft = () => {
     const prepared = prepareProviderForSave(draft, providerCatalog)
-    const errors = validateProviderDraft(prepared, preparedProviders, editingIndex, t)
+    const errors = validateProviderDraft(prepared, preparedProviders, editingIndex, translate)
 
     if (errors.length > 0) {
       setDraftErrors(errors)
       return
     }
 
-    const previousName = editingIndex === null ? null : providerRows[editingIndex]?.name
+    const previousName = editingIndex === null ? null : providerRows[editingIndex]?.name ?? null
     const nextProvider = providerFromPrepared(prepared, draft, providerCatalog)
 
     setProviderRows(current => {
@@ -240,7 +365,7 @@ export default function SetupLLMApp({
     setSheetOpen(false)
   }
 
-  const removeProvider = (index) => {
+  const removeProvider = (index: number) => {
     const provider = providerRows[index]
 
     setProviderRows(current => current.filter((_provider, itemIndex) => itemIndex !== index))
@@ -249,19 +374,24 @@ export default function SetupLLMApp({
     setServerErrors([])
   }
 
-  const clearChecks = (names) => {
+  const clearChecks = (names: string | Array<string | null | undefined>) => {
     const list = Array.isArray(names) ? names : [names]
 
     setChecks(current => {
       const next = { ...current }
-      for (const name of list.filter(Boolean)) delete next[name]
+      for (const name of list.filter((value): value is string => Boolean(value))) {
+        delete next[name]
+      }
       return next
     })
   }
 
-  const runCheck = async (provider) => {
-    const prepared = prepareProviderForSave(provider, providerCatalog)
-    const errors = validateProvider(prepared, t)
+  const runCheck = async (provider: ProviderRow | PreparedProvider) => {
+    const prepared =
+      "provider_options_error" in provider || "base_url" in provider || "api_key_inherits_from" in provider
+        ? (provider as PreparedProvider)
+        : prepareProviderForSave(provider as ProviderRow, providerCatalog)
+    const errors = validateProvider(prepared, translate)
 
     if (errors.length > 0) {
       setServerErrors(errors)
@@ -300,7 +430,7 @@ export default function SetupLLMApp({
 
   const runDraftCheck = async () => {
     const prepared = prepareProviderForSave(draft, providerCatalog)
-    const errors = validateProvider(prepared, t)
+    const errors = validateProvider(prepared, translate)
 
     if (errors.length > 0) {
       setDraftErrors(errors)
@@ -334,16 +464,16 @@ export default function SetupLLMApp({
   }
 
   return (
-    <SetupLayout title={t("web.setup.llm.title")} appName={app_name}>
+    <SetupLayout title={translate("web.setup.llm.title")} appName={app_name}>
       <section className="grid flex-1 place-items-center py-8 sm:py-10">
         <Card size="sm" className="w-full max-w-5xl gap-0 bg-card py-0">
           <CardHeader className="border-b border-border px-5 py-4 sm:px-6">
             <div className="min-w-0">
               <p className="text-xs font-medium text-primary">
-                {t("web.setup.llm.step")}
+                {translate("web.setup.llm.step")}
               </p>
               <CardTitle className="mt-1 text-xl font-semibold">
-                {t("web.setup.llm.heading")}
+                {translate("web.setup.llm.heading")}
               </CardTitle>
             </div>
           </CardHeader>
@@ -354,14 +484,14 @@ export default function SetupLLMApp({
             <section className="grid gap-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
-                  <h2 className="text-sm font-semibold">{t("web.setup.llm.providers.title")}</h2>
+                  <h2 className="text-sm font-semibold">{translate("web.setup.llm.providers.title")}</h2>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {t("web.setup.llm.providers.description")}
+                    {translate("web.setup.llm.providers.description")}
                   </p>
                 </div>
                 <Button type="button" onClick={openNewSheet}>
                   <RiAddLine data-icon="inline-start" />
-                  <span>{t("web.setup.llm.providers.add")}</span>
+                  <span>{translate("web.setup.llm.providers.add")}</span>
                 </Button>
               </div>
 
@@ -370,7 +500,7 @@ export default function SetupLLMApp({
               ) : (
                 <div className="grid gap-3">
                   {providerRows.map((provider, index) => (
-                    <ProviderRow
+                    <ProviderRowView
                       key={provider.id || `${provider.name || "provider"}-${index}`}
                       provider={provider}
                       providerCatalog={providerCatalog}
@@ -387,9 +517,9 @@ export default function SetupLLMApp({
 
             <section className="grid gap-4">
               <div className="min-w-0">
-                <h2 className="text-sm font-semibold">{t("web.setup.llm.aliases.title")}</h2>
+                <h2 className="text-sm font-semibold">{translate("web.setup.llm.aliases.title")}</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {t("web.setup.llm.aliases.description")}
+                  {translate("web.setup.llm.aliases.description")}
                 </p>
               </div>
 
@@ -413,7 +543,7 @@ export default function SetupLLMApp({
           <CardFooter className="justify-end border-t border-border px-5 py-4 sm:px-6">
             <Button type="button" onClick={saveProviders} disabled={!canSave}>
               <RiSaveLine data-icon="inline-start" />
-              <span>{saving ? t("web.setup.llm.saving") : t("web.setup.llm.save")}</span>
+              <span>{saving ? translate("web.setup.llm.saving") : translate("web.setup.llm.save")}</span>
             </Button>
           </CardFooter>
         </Card>
@@ -439,7 +569,17 @@ export default function SetupLLMApp({
   )
 }
 
-function ProviderRow({
+interface ProviderRowViewProps {
+  provider: ProviderRow
+  providerCatalog: ProviderCatalogEntry[]
+  check: CheckResult | undefined
+  checking: boolean
+  onCheck: () => void
+  onEdit: () => void
+  onRemove: () => void
+}
+
+function ProviderRowView({
   provider,
   providerCatalog,
   check,
@@ -447,15 +587,16 @@ function ProviderRow({
   onCheck,
   onEdit,
   onRemove,
-}) {
+}: ProviderRowViewProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
   const prepared = prepareProviderForSave(provider, providerCatalog)
-  const invalid = validateProvider(prepared, t).length > 0
+  const invalid = validateProvider(prepared, translate).length > 0
   const apiKeySupported = providerApiKeySupported(prepared.provider_id, providerCatalog)
-  const providerName = providerLabel(prepared.provider_id, providerCatalog, t) || t("web.setup.llm.fields.provider_id")
+  const providerName = providerLabel(prepared.provider_id, providerCatalog, translate) || translate("web.setup.llm.fields.provider_id")
   const metadata = [
-    prepared.model_id || t("web.setup.llm.fields.model_id"),
-    prepared.base_url ? t("web.setup.llm.status.custom_base_url") : null,
+    prepared.model_id || translate("web.setup.llm.fields.model_id"),
+    prepared.base_url ? translate("web.setup.llm.status.custom_base_url") : null,
   ].filter(Boolean)
 
   return (
@@ -463,7 +604,7 @@ function ProviderRow({
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <p className="min-w-0 truncate text-sm font-medium">
-            {prepared.name || t("web.setup.llm.providers.unnamed")}
+            {prepared.name || translate("web.setup.llm.providers.unnamed")}
           </p>
           {apiKeySupported ? <SecretBadge status={provider.secret_status?.api_key} /> : null}
         </div>
@@ -483,13 +624,13 @@ function ProviderRow({
           onClick={onCheck}
         >
           <RiPlugLine data-icon="inline-start" />
-          <span>{t("web.setup.llm.actions.test")}</span>
+          <span>{translate("web.setup.llm.actions.test")}</span>
         </Button>
         <Button
           type="button"
           size="icon-sm"
           variant="ghost"
-          aria-label={t("web.setup.llm.actions.edit")}
+          aria-label={translate("web.setup.llm.actions.edit")}
           onClick={onEdit}
         >
           <RiEditLine />
@@ -498,7 +639,7 @@ function ProviderRow({
           type="button"
           size="icon-sm"
           variant="ghost"
-          aria-label={t("web.setup.llm.actions.remove")}
+          aria-label={translate("web.setup.llm.actions.remove")}
           onClick={onRemove}
         >
           <RiDeleteBinLine />
@@ -508,25 +649,33 @@ function ProviderRow({
   )
 }
 
-function EmptyProviders({ onAdd }) {
+function EmptyProviders({ onAdd }: { onAdd: () => void }) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <div className="grid min-h-40 place-items-center border border-border bg-background-secondary px-4 py-10 text-center">
       <div className="grid justify-items-center gap-4">
         <div>
-          <p className="text-base font-medium">{t("web.setup.llm.providers.empty_title")}</p>
+          <p className="text-base font-medium">{translate("web.setup.llm.providers.empty_title")}</p>
           <p className="mt-2 text-sm text-muted-foreground">
-            {t("web.setup.llm.providers.empty_description")}
+            {translate("web.setup.llm.providers.empty_description")}
           </p>
         </div>
         <Button type="button" onClick={onAdd}>
           <RiAddLine data-icon="inline-start" />
-          <span>{t("web.setup.llm.providers.add")}</span>
+          <span>{translate("web.setup.llm.providers.add")}</span>
         </Button>
       </div>
     </div>
   )
+}
+
+interface AliasRowProps {
+  aliasName: AliasName
+  binding: AliasBinding | undefined
+  providerNames: string[]
+  onChange: (binding: AliasBinding) => void
 }
 
 function AliasRow({
@@ -534,13 +683,16 @@ function AliasRow({
   binding,
   providerNames,
   onChange,
-}) {
+}: AliasRowProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
   const providerOptions = providerNames.length ? providerNames : [""]
   const mode = aliasSelectMode(aliasName, binding)
   const target = binding?.target || ""
 
-  const setMode = (nextMode) => {
+  const setMode = (nextMode: string | null) => {
+    if (!nextMode) return
+
     if (nextMode.startsWith("alias:")) {
       onChange({ kind: "alias", target: nextMode.replace("alias:", "") })
       return
@@ -554,31 +706,31 @@ function AliasRow({
       <div className="min-w-0">
         <p className="font-mono text-sm font-medium">:{aliasName}</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          {t(`web.setup.llm.aliases.roles.${aliasName}`)}
+          {translate(`web.setup.llm.aliases.roles.${aliasName}`)}
         </p>
       </div>
 
       <div className="min-w-0 text-sm text-muted-foreground">
-        {aliasSummary(aliasName, binding, t)}
+        {aliasSummary(aliasName, binding, translate)}
       </div>
 
       {aliasName === "default" ? (
         <div className="text-sm text-muted-foreground">
-          {t("web.setup.llm.aliases.provider_required")}
+          {translate("web.setup.llm.aliases.provider_required")}
         </div>
       ) : (
         <Select value={mode} onValueChange={setMode}>
           <SelectTrigger className="w-full">
-            <span data-slot="select-value">{aliasModeLabel(aliasName, mode, t)}</span>
+            <span data-slot="select-value">{aliasModeLabel(aliasName, mode, translate)}</span>
           </SelectTrigger>
           <SelectContent>
             {aliasTargetOptions(aliasName).map(targetAlias => (
               <SelectItem key={targetAlias} value={`alias:${targetAlias}`}>
-                {aliasModeLabel(aliasName, `alias:${targetAlias}`, t)}
+                {aliasModeLabel(aliasName, `alias:${targetAlias}`, translate)}
               </SelectItem>
             ))}
             <SelectItem value="provider">
-              {t("web.setup.llm.aliases.modes.provider")}
+              {translate("web.setup.llm.aliases.modes.provider")}
             </SelectItem>
           </SelectContent>
         </Select>
@@ -587,15 +739,15 @@ function AliasRow({
       {mode === "provider" ? (
         <Select
           value={target}
-          onValueChange={value => onChange({ kind: "provider", target: value })}
+          onValueChange={(value: string | null) => onChange({ kind: "provider", target: value ?? "" })}
         >
           <SelectTrigger className="w-full">
-            <span data-slot="select-value">{target || t("web.setup.llm.aliases.select_provider")}</span>
+            <span data-slot="select-value">{target || translate("web.setup.llm.aliases.select_provider")}</span>
           </SelectTrigger>
           <SelectContent>
             {providerOptions.map(name => (
               <SelectItem key={name || "empty"} value={name}>
-                {name || t("web.setup.llm.aliases.no_provider")}
+                {name || translate("web.setup.llm.aliases.no_provider")}
               </SelectItem>
             ))}
           </SelectContent>
@@ -604,11 +756,25 @@ function AliasRow({
 
       {mode.startsWith("alias:") ? (
         <div className="flex h-10 items-center border border-transparent border-b-input bg-field px-4 text-sm text-muted-foreground">
-          {aliasTargetSummary(aliasName, t, mode.replace("alias:", ""))}
+          {aliasTargetSummary(aliasName, translate, mode.replace("alias:", "") as AliasName)}
         </div>
       ) : null}
     </div>
   )
+}
+
+interface ProviderSheetProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  draft: ProviderRow
+  setDraft: (next: ProviderRow) => void
+  providerCatalogEntries: ProviderCatalogEntry[]
+  inheritSources?: InheritSource[]
+  errors: LLMError[]
+  editing: boolean
+  onApply: () => void
+  onTest: () => void
+  testing: boolean
 }
 
 function ProviderSheet({
@@ -623,13 +789,14 @@ function ProviderSheet({
   onApply,
   onTest,
   testing,
-}) {
+}: ProviderSheetProps) {
   const { t } = useTranslation()
-  const [mode, setMode] = React.useState(editing ? "configure" : "select")
+  const translate = t as Translate
+  const [mode, setMode] = React.useState<"select" | "configure">(editing ? "configure" : "select")
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const fieldErrors = React.useMemo(() => errorsByField(errors), [errors])
   const formErrors = React.useMemo(() => errorsWithoutFields(errors), [errors])
-  const catalogOptions = providerCatalogEntries.length
+  const catalogOptions: ProviderCatalogEntry[] = providerCatalogEntries.length
     ? providerCatalogEntries
     : normalizeProviderCatalog([draft.provider_id || "openai"])
   const catalogEntry = catalogEntryFor(catalogOptions, draft.provider_id) || catalogOptions[0]
@@ -644,11 +811,12 @@ function ProviderSheet({
     setMode(editing ? "configure" : "select")
   }, [editing, open])
 
-  const update = (field, value) => {
+  const update = <K extends keyof ProviderRow>(field: K, value: ProviderRow[K]) => {
     setDraft({ ...draft, [field]: value })
   }
 
-  const updateProviderId = (providerId) => {
+  const updateProviderId = (providerId: string | null) => {
+    if (!providerId) return
     const nextCatalogEntry = catalogEntryFor(catalogOptions, providerId)
     const nextApiKeySupported = providerApiKeySupported(providerId, catalogOptions)
 
@@ -660,13 +828,13 @@ function ProviderSheet({
       ...(nextApiKeySupported
         ? {}
         : {
-          api_key: null,
-          secret_status: { ...(draft.secret_status || {}), api_key: "missing" },
+          api_key: "",
+          secret_status: { ...(draft.secret_status || {}), api_key: "missing" as SecretStatus },
         }),
     })
   }
 
-  const updateProviderOption = (key, value) => {
+  const updateProviderOption = (key: string, value: unknown) => {
     setDraft({
       ...draft,
       provider_options: {
@@ -676,12 +844,12 @@ function ProviderSheet({
     })
   }
 
-  const chooseProvider = (catalogItem) => {
+  const chooseProvider = (catalogItem: ProviderCatalogEntry) => {
     setDraft(newProviderForCatalogEntry(catalogItem))
     setMode("configure")
   }
 
-  const chooseExistingSource = (source) => {
+  const chooseExistingSource = (source: InheritSource) => {
     setDraft(newProviderFromExistingSource(source))
     setMode("configure")
   }
@@ -702,19 +870,19 @@ function ProviderSheet({
             <div className="min-w-0">
               <SheetTitle>
                 {mode === "select"
-                  ? t("web.setup.llm.sheet.select_title")
+                  ? translate("web.setup.llm.sheet.select_title")
                   : editing
-                  ? t("web.setup.llm.sheet.edit_title")
-                  : t("web.setup.llm.sheet.add_title")}
+                  ? translate("web.setup.llm.sheet.edit_title")
+                  : translate("web.setup.llm.sheet.add_title")}
               </SheetTitle>
               <SheetDescription>
                 {mode === "select" ? (
                   ""
                 ) : (
                   <>
-                    {providerLabel(draft.provider_id, catalogOptions, t) || t("web.setup.llm.fields.provider_id")}
+                    {providerLabel(draft.provider_id, catalogOptions, translate) || translate("web.setup.llm.fields.provider_id")}
                     {" · "}
-                    {draft.model_id || t("web.setup.llm.fields.model_id")}
+                    {draft.model_id || translate("web.setup.llm.fields.model_id")}
                   </>
                 )}
               </SheetDescription>
@@ -723,7 +891,7 @@ function ProviderSheet({
               type="button"
               size="icon-sm"
               variant="ghost"
-              aria-label={t("app.close")}
+              aria-label={translate("app.close")}
               onClick={() => onOpenChange(false)}
             >
               <RiCloseLine />
@@ -744,7 +912,7 @@ function ProviderSheet({
               <div className="grid gap-3">
                 {inheritSources.length > 0 ? (
                   <h3 className="text-sm font-semibold">
-                    {t("web.setup.llm.sheet.choose_provider_type")}
+                    {translate("web.setup.llm.sheet.choose_provider_type")}
                   </h3>
                 ) : null}
                 <ProviderTypeChooser catalog={catalogOptions} onChoose={chooseProvider} />
@@ -754,10 +922,10 @@ function ProviderSheet({
             <>
               <ErrorList errors={formErrors} />
 
-              <FormSection title={t("web.setup.llm.sections.endpoint")}>
+              <FormSection title={translate("web.setup.llm.sections.endpoint")}>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
-                    label={t("web.setup.llm.fields.name")}
+                    label={translate("web.setup.llm.fields.name")}
                     required={Boolean(fieldErrors.name)}
                     error={fieldErrors.name}
                   >
@@ -772,7 +940,7 @@ function ProviderSheet({
                   </Field>
 
                   <Field
-                    label={t("web.setup.llm.fields.provider_id")}
+                    label={translate("web.setup.llm.fields.provider_id")}
                     required
                     error={fieldErrors.provider_id}
                   >
@@ -782,13 +950,13 @@ function ProviderSheet({
                     >
                       <SelectTrigger className="w-full">
                         <span data-slot="select-value">
-                          {providerLabel(draft.provider_id, catalogOptions, t) || t("web.setup.llm.fields.provider_id")}
+                          {providerLabel(draft.provider_id, catalogOptions, translate) || translate("web.setup.llm.fields.provider_id")}
                         </span>
                       </SelectTrigger>
                       <SelectContent>
                         {catalogOptions.map(item => (
                           <SelectItem key={item.id} value={item.id}>
-                            {providerLabel(item.id, catalogOptions, t)}
+                            {providerLabel(item.id, catalogOptions, translate)}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -797,10 +965,10 @@ function ProviderSheet({
                 </div>
               </FormSection>
 
-              <FormSection title={t("web.setup.llm.sections.model")}>
+              <FormSection title={translate("web.setup.llm.sections.model")}>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
-                    label={t("web.setup.llm.fields.model_id")}
+                    label={translate("web.setup.llm.fields.model_id")}
                     required
                     error={fieldErrors.model_id}
                   >
@@ -816,23 +984,23 @@ function ProviderSheet({
               </FormSection>
 
               {apiKeySupported ? (
-                <FormSection title={t("web.setup.llm.sections.credentials")}>
+                <FormSection title={translate("web.setup.llm.sections.credentials")}>
                   <div className="grid gap-4">
                     <SecretField
-                      label={t("web.setup.llm.fields.api_key")}
+                      label={translate("web.setup.llm.fields.api_key")}
                       value={draft.api_key || ""}
                       status={draft.secret_status?.api_key}
                       onChange={value => update("api_key", value)}
                     />
                     {draft.api_key_inherits_from && !draft.api_key?.trim() ? (
                       <p className="text-xs leading-5 text-primary">
-                        {t("web.setup.llm.fields.api_key_inherited", {
+                        {translate("web.setup.llm.fields.api_key_inherited", {
                           values: { source: draft.api_key_inherits_from },
                         })}
                       </p>
                     ) : null}
                     <p className="text-xs leading-5 text-muted-foreground">
-                      {t("web.setup.llm.fields.api_key_help")}
+                      {translate("web.setup.llm.fields.api_key_help")}
                     </p>
                   </div>
                 </FormSection>
@@ -842,7 +1010,7 @@ function ProviderSheet({
                 <FormSection
                   title={
                     <CollapsibleTrigger className="flex w-full cursor-pointer items-center justify-between gap-3 text-left">
-                      <span>{t("web.setup.llm.sections.advanced")}</span>
+                      <span>{translate("web.setup.llm.sections.advanced")}</span>
                       <RiArrowDownSLine
                         className={[
                           "size-4 shrink-0 text-muted-foreground transition-transform",
@@ -855,7 +1023,7 @@ function ProviderSheet({
                   <CollapsibleContent>
                     <div className="grid gap-5 pt-1">
                       <div className="grid gap-4 md:grid-cols-2">
-                        <Field label={t("web.setup.llm.fields.base_url")}>
+                        <Field label={translate("web.setup.llm.fields.base_url")}>
                           <Input
                             value={draft.base_url}
                             onChange={event => update("base_url", event.target.value)}
@@ -868,7 +1036,7 @@ function ProviderSheet({
                       {providerOptionFields.length > 0 ? (
                         <div className="grid gap-4 md:grid-cols-2">
                           {providerOptionFields.map(field => (
-                            <ProviderOptionField
+                            <ProviderOptionFieldView
                               key={field.key}
                               field={field}
                               value={draft.provider_options?.[field.key]}
@@ -889,11 +1057,11 @@ function ProviderSheet({
         {mode === "configure" ? (
           <SheetFooter className="shrink-0">
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-              {t("web.setup.llm.sheet.cancel")}
+              {translate("web.setup.llm.sheet.cancel")}
             </Button>
             <Button type="button" variant="outline" onClick={onTest} disabled={testing}>
               <RiPlugLine data-icon="inline-start" />
-              <span>{testing ? t("web.setup.llm.status.checking") : t("web.setup.llm.actions.test")}</span>
+              <span>{testing ? translate("web.setup.llm.status.checking") : translate("web.setup.llm.actions.test")}</span>
             </Button>
             <Button type="button" onClick={onApply}>
               {editing ? (
@@ -902,7 +1070,7 @@ function ProviderSheet({
                 <RiAddLine data-icon="inline-start" />
               )}
               <span>
-                {editing ? t("web.setup.llm.sheet.save_changes") : t("web.setup.llm.providers.add")}
+                {editing ? translate("web.setup.llm.sheet.save_changes") : translate("web.setup.llm.providers.add")}
               </span>
             </Button>
           </SheetFooter>
@@ -912,8 +1080,15 @@ function ProviderSheet({
   )
 }
 
-function ExistingProvidersChooser({ sources, catalog, onChoose }) {
+interface ExistingProvidersChooserProps {
+  sources: InheritSource[]
+  catalog: ProviderCatalogEntry[]
+  onChoose: (source: InheritSource) => void
+}
+
+function ExistingProvidersChooser({ sources, catalog, onChoose }: ExistingProvidersChooserProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
   const [open, setOpen] = React.useState(false)
 
   return (
@@ -921,10 +1096,10 @@ function ExistingProvidersChooser({ sources, catalog, onChoose }) {
       <CollapsibleTrigger className="flex w-full cursor-pointer items-center justify-between gap-3 border border-border bg-background-secondary px-4 py-3 text-left transition-colors hover:border-primary hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:outline-none">
         <span className="min-w-0">
           <span className="block text-sm font-semibold">
-            {t("web.setup.llm.sheet.from_existing_title")}
+            {translate("web.setup.llm.sheet.from_existing_title")}
           </span>
           <span className="mt-0.5 block text-xs text-muted-foreground">
-            {t("web.setup.llm.sheet.from_existing_description")}
+            {translate("web.setup.llm.sheet.from_existing_description")}
           </span>
         </span>
         <RiArrowDownSLine
@@ -956,13 +1131,13 @@ function ExistingProvidersChooser({ sources, catalog, onChoose }) {
               </span>
               <span className="flex flex-wrap gap-2">
                 <Badge variant="outline">
-                  {providerLabel(source.provider_id, catalog, t) || source.provider_id}
+                  {providerLabel(source.provider_id, catalog, translate) || source.provider_id}
                 </Badge>
                 {source.model_id ? (
                   <Badge variant="outline">{source.model_id}</Badge>
                 ) : null}
                 <Badge variant="secondary">
-                  {t("web.setup.llm.sheet.api_key_stored_badge")}
+                  {translate("web.setup.llm.sheet.api_key_stored_badge")}
                 </Badge>
               </span>
             </button>
@@ -973,8 +1148,14 @@ function ExistingProvidersChooser({ sources, catalog, onChoose }) {
   )
 }
 
-function ProviderTypeChooser({ catalog, onChoose }) {
+interface ProviderTypeChooserProps {
+  catalog: ProviderCatalogEntry[]
+  onChoose: (catalogItem: ProviderCatalogEntry) => void
+}
+
+function ProviderTypeChooser({ catalog, onChoose }: ProviderTypeChooserProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <div
@@ -992,7 +1173,7 @@ function ProviderTypeChooser({ catalog, onChoose }) {
         >
           <span className="flex items-center justify-between gap-4">
             <span className="min-w-0 truncate text-base font-semibold">
-              {providerLabel(item.id, catalog, t)}
+              {providerLabel(item.id, catalog, translate)}
             </span>
             <RiArrowRightSLine className="size-5 shrink-0 text-muted-foreground group-hover:text-primary" />
           </span>
@@ -1005,10 +1186,23 @@ function ProviderTypeChooser({ catalog, onChoose }) {
   )
 }
 
-function ProviderOptionField({ field, value, onChange, error }) {
+interface ProviderOptionFieldViewProps {
+  field: ProviderOptionField
+  value: unknown
+  onChange: (value: unknown) => void
+  error?: string
+}
+
+function ProviderOptionFieldView({
+  field,
+  value,
+  onChange,
+  error,
+}: ProviderOptionFieldViewProps) {
   const { t } = useTranslation()
-  const label = providerOptionLabel(field, t)
-  const description = providerOptionDescription(field, t)
+  const translate = t as Translate
+  const label = providerOptionLabel(field, translate)
+  const description = providerOptionDescription(field, translate)
   const effectiveValue = fieldValue(field, value)
 
   if (field.input_type === "boolean") {
@@ -1020,7 +1214,7 @@ function ProviderOptionField({ field, value, onChange, error }) {
               <span>{label}</span>
               {field.required ? (
                 <span className="ml-1 text-xs font-normal text-muted-foreground">
-                  {t("web.setup.llm.required")}
+                  {translate("web.setup.llm.required")}
                 </span>
               ) : null}
             </p>
@@ -1051,14 +1245,14 @@ function ProviderOptionField({ field, value, onChange, error }) {
           <SelectTrigger className="w-full">
             <span data-slot="select-value">
               {effectiveValue === undefined || effectiveValue === null || effectiveValue === ""
-                ? t("web.setup.llm.provider_settings.select_value")
-                : providerOptionValueLabel(field, stringValue(effectiveValue), t)}
+                ? translate("web.setup.llm.provider_settings.select_value")
+                : providerOptionValueLabel(field, stringValue(effectiveValue), translate)}
             </span>
           </SelectTrigger>
           <SelectContent>
             {(field.options || []).map(option => (
               <SelectItem key={option} value={option}>
-                {providerOptionValueLabel(field, option, t)}
+                {providerOptionValueLabel(field, option, translate)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1097,9 +1291,16 @@ function ProviderOptionField({ field, value, onChange, error }) {
   )
 }
 
-function ProviderOptionJsonEditor({ field, value, onChange }) {
+interface ProviderOptionJsonEditorProps {
+  field: ProviderOptionField
+  value: unknown
+  onChange: (value: unknown) => void
+}
+
+function ProviderOptionJsonEditor({ field, value, onChange }: ProviderOptionJsonEditorProps) {
   const { t } = useTranslation()
-  const translations = React.useMemo(() => jsonEditorTranslations(t), [t])
+  const translate = t as Translate
+  const translations = React.useMemo(() => jsonEditorTranslations(translate), [translate])
   const canClear = value !== undefined && value !== null && value !== ""
 
   return (
@@ -1110,8 +1311,8 @@ function ProviderOptionJsonEditor({ field, value, onChange }) {
           size="icon-xs"
           variant="ghost"
           disabled={!canClear}
-          aria-label={t("web.setup.llm.actions.clear")}
-          title={t("web.setup.llm.actions.clear")}
+          aria-label={translate("web.setup.llm.actions.clear")}
+          title={translate("web.setup.llm.actions.clear")}
           onClick={() => onChange("")}
         >
           <RiCloseLine />
@@ -1139,7 +1340,7 @@ function ProviderOptionJsonEditor({ field, value, onChange }) {
   )
 }
 
-function FormSection({ title, children }) {
+function FormSection({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="grid gap-3">
       <h3 className="border-b border-border pb-2 text-sm font-semibold">{title}</h3>
@@ -1148,8 +1349,16 @@ function FormSection({ title, children }) {
   )
 }
 
-function Field({ label, required, error, children }) {
+interface FieldProps {
+  label: React.ReactNode
+  required?: boolean
+  error?: string
+  children: React.ReactNode
+}
+
+function Field({ label, required, error, children }: FieldProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <div className="grid gap-2">
@@ -1157,7 +1366,7 @@ function Field({ label, required, error, children }) {
         <span>{label}</span>
         {required ? (
           <span className="ml-1 text-xs font-normal text-muted-foreground">
-            {t("web.setup.llm.required")}
+            {translate("web.setup.llm.required")}
           </span>
         ) : null}
       </Label>
@@ -1167,7 +1376,7 @@ function Field({ label, required, error, children }) {
   )
 }
 
-function FieldDescription({ children }) {
+function FieldDescription({ children }: { children: React.ReactNode }) {
   return (
     <p className="line-clamp-3 text-xs leading-5 text-muted-foreground">
       {children}
@@ -1175,8 +1384,16 @@ function FieldDescription({ children }) {
   )
 }
 
-function SecretField({ label, value, status, onChange }) {
+interface SecretFieldProps {
+  label: string
+  value: string
+  status: SecretStatus | undefined
+  onChange: (value: string) => void
+}
+
+function SecretField({ label, value, status, onChange }: SecretFieldProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <Field label={label}>
@@ -1186,12 +1403,12 @@ function SecretField({ label, value, status, onChange }) {
           value={value}
           onChange={event => onChange(event.target.value)}
           autoComplete="new-password"
-          placeholder={status === "stored" ? t("web.setup.llm.secret_stored") : ""}
+          placeholder={status === "stored" ? translate("web.setup.llm.secret_stored") : ""}
           className={status === "stored" ? "pr-24" : undefined}
         />
         {status === "stored" ? (
           <span className="absolute right-3 top-1/2 -translate-y-1/2">
-            <Badge variant="secondary">{t("web.setup.llm.secret_stored_badge")}</Badge>
+            <Badge variant="secondary">{translate("web.setup.llm.secret_stored_badge")}</Badge>
           </span>
         ) : null}
       </div>
@@ -1199,39 +1416,47 @@ function SecretField({ label, value, status, onChange }) {
   )
 }
 
-function SecretBadge({ status }) {
+function SecretBadge({ status }: { status: SecretStatus | undefined }) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   if (status === "stored") {
-    return <Badge variant="secondary">{t("web.setup.llm.secret_stored_badge")}</Badge>
+    return <Badge variant="secondary">{translate("web.setup.llm.secret_stored_badge")}</Badge>
   }
 
-  return <Badge variant="outline">{t("web.setup.llm.status.no_key")}</Badge>
+  return <Badge variant="outline">{translate("web.setup.llm.status.no_key")}</Badge>
 }
 
-function CheckBadge({ invalid, checking, check }) {
-  const { t } = useTranslation()
+interface CheckBadgeProps {
+  invalid: boolean
+  checking: boolean
+  check: CheckResult | undefined
+}
 
-  if (invalid) return <Badge variant="destructive">{t("web.setup.llm.status.invalid")}</Badge>
-  if (checking) return <Badge variant="secondary">{t("web.setup.llm.status.checking")}</Badge>
+function CheckBadge({ invalid, checking, check }: CheckBadgeProps) {
+  const { t } = useTranslation()
+  const translate = t as Translate
+
+  if (invalid) return <Badge variant="destructive">{translate("web.setup.llm.status.invalid")}</Badge>
+  if (checking) return <Badge variant="secondary">{translate("web.setup.llm.status.checking")}</Badge>
 
   if (check?.status === "success") {
     return (
       <Badge className="bg-green-20 text-green-70 hover:bg-green-30 dark:bg-green-80 dark:text-green-20 dark:hover:bg-green-70">
         <RiCheckboxCircleLine />
-        <span>{t("web.setup.llm.status.connected")}</span>
+        <span>{translate("web.setup.llm.status.connected")}</span>
       </Badge>
     )
   }
 
   if (check?.status === "error") {
-    return <Badge variant="destructive">{t("web.setup.llm.status.failed")}</Badge>
+    return <Badge variant="destructive">{translate("web.setup.llm.status.failed")}</Badge>
   }
 
-  return <Badge variant="outline">{t("web.setup.llm.status.untested")}</Badge>
+  return <Badge variant="outline">{translate("web.setup.llm.status.untested")}</Badge>
 }
 
-function ErrorList({ errors }) {
+function ErrorList({ errors }: { errors: LLMError[] }) {
   if (!errors.length) return null
 
   return (
@@ -1243,8 +1468,8 @@ function ErrorList({ errors }) {
   )
 }
 
-async function postJson(path, payload) {
-  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
+async function postJson(path: string, payload: unknown): Promise<PostJsonResponse> {
+  const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content
 
   try {
     const response = await fetch(path, {
@@ -1257,18 +1482,20 @@ async function postJson(path, payload) {
       body: JSON.stringify(payload),
     })
 
-    return await response.json()
+    return (await response.json()) as PostJsonResponse
   } catch (error) {
     return {
       ok: false,
-      errors: [{ message: error.message || String(error) }],
+      errors: [{ message: error instanceof Error ? error.message : String(error) }],
     }
   }
 }
 
-function normalizeProviderCatalog(catalog) {
+function normalizeProviderCatalog(
+  catalog: Array<string | ProviderCatalogEntryInput> | undefined,
+): ProviderCatalogEntry[] {
   return (catalog || [])
-    .map(item => {
+    .map((item): ProviderCatalogEntry => {
       if (typeof item === "string") {
         return {
           id: item,
@@ -1292,14 +1519,17 @@ function normalizeProviderCatalog(catalog) {
     .filter(item => item.id)
 }
 
-function normalizeProviders(providers, catalog) {
+function normalizeProviders(
+  providers: ProviderRowInput[],
+  catalog: ProviderCatalogEntry[],
+): ProviderRow[] {
   return providers.map(provider => editableProvider({
     ...provider,
     provider_id: provider.provider_id || catalog[0]?.id || "",
-  }, catalog))
+  }))
 }
 
-function editableProvider(provider, catalog = []) {
+function editableProvider(provider: ProviderRowInput): ProviderRow {
   const providerOptions = provider.provider_options || {}
 
   return {
@@ -1315,12 +1545,12 @@ function editableProvider(provider, catalog = []) {
   }
 }
 
-function newProvider(catalog) {
-  const normalized = normalizeProviderCatalog(catalog)
-  return newProviderForCatalogEntry(normalized[0] || { id: "" })
+function newProvider(catalog: ProviderCatalogEntry[]): ProviderRow {
+  const normalized = catalog
+  return newProviderForCatalogEntry(normalized[0] || { id: "", label: "", default_base_url: "", api_key_supported: true, provider_options: [] })
 }
 
-function newProviderForCatalogEntry(catalogEntry) {
+function newProviderForCatalogEntry(catalogEntry: ProviderCatalogEntry | undefined): ProviderRow {
   return {
     id: null,
     name: "",
@@ -1334,7 +1564,7 @@ function newProviderForCatalogEntry(catalogEntry) {
   }
 }
 
-function newProviderFromExistingSource(source) {
+function newProviderFromExistingSource(source: InheritSource): ProviderRow {
   return {
     id: null,
     name: "",
@@ -1348,13 +1578,17 @@ function newProviderFromExistingSource(source) {
   }
 }
 
-function providerFromPrepared(prepared, draft, catalog = []) {
+function providerFromPrepared(
+  prepared: PreparedProvider,
+  draft: ProviderRow,
+  catalog: ProviderCatalogEntry[] = [],
+): ProviderRow {
   const apiKeySupported = providerApiKeySupported(prepared.provider_id, catalog)
   const typedKey = apiKeySupported && typeof draft.api_key === "string" && draft.api_key.trim() !== ""
   const inheritsFrom = apiKeySupported && !typedKey && draft.api_key_inherits_from
     ? draft.api_key_inherits_from
     : null
-  const apiKeyStatus = apiKeySupported
+  const apiKeyStatus: SecretStatus = apiKeySupported
     ? typedKey || inheritsFrom
       ? "stored"
       : draft.secret_status?.api_key || "missing"
@@ -1375,12 +1609,15 @@ function providerFromPrepared(prepared, draft, catalog = []) {
   }
 }
 
-function prepareProviderForSave(provider, catalog = []) {
+function prepareProviderForSave(
+  provider: ProviderRow,
+  catalog: ProviderCatalogEntry[] = [],
+): PreparedProvider {
   const options = parseProviderOptions(provider, catalog)
   const providerId = trimmed(provider.provider_id)
   const modelId = trimmed(provider.model_id)
   const apiKeySupported = providerApiKeySupported(providerId, catalog)
-  const attrs = {
+  const attrs: PreparedProvider = {
     id: provider.id || null,
     name: trimmed(provider.name) || endpointDefaultName({ provider_id: providerId, model_id: modelId }),
     provider_id: providerId,
@@ -1403,22 +1640,26 @@ function prepareProviderForSave(provider, catalog = []) {
   return attrs
 }
 
-function cleanProviderPayload(provider) {
+function cleanProviderPayload(provider: PreparedProvider): Omit<PreparedProvider, "provider_options_error" | "provider_options_field_errors"> {
   const {
-    provider_options_error,
-    provider_options_field_errors,
+    provider_options_error: _providerOptionsError,
+    provider_options_field_errors: _providerOptionsFieldErrors,
     ...payload
   } = provider
 
   return payload
 }
 
-function parseProviderOptions(provider, catalog = []) {
+type ParsedOptionsOk = { ok: true; value: Record<string, unknown>; field_errors?: undefined; error?: undefined }
+type ParsedOptionsErr = { ok: false; error: string; field_errors?: Array<{ field: string; error: string }>; value?: undefined }
+type ParsedOptions = ParsedOptionsOk | ParsedOptionsErr
+
+function parseProviderOptions(provider: ProviderRow, catalog: ProviderCatalogEntry[] = []): ParsedOptions {
   const catalogEntry = catalogEntryFor(catalog, provider.provider_id)
   const fields = catalogEntry?.provider_options || []
   const values = provider.provider_options || {}
-  const parsed = {}
-  const errors = []
+  const parsed: Record<string, unknown> = {}
+  const errors: Array<{ field: string; error: string }> = []
 
   for (const field of fields) {
     const value = values[field.key]
@@ -1438,7 +1679,11 @@ function parseProviderOptions(provider, catalog = []) {
   return { ok: true, value: parsed }
 }
 
-function parseProviderOptionField(field, value) {
+type ParsedFieldOk = { ok: true; hasValue: true; value: unknown } | { ok: true; hasValue: false }
+type ParsedFieldErr = { ok: false; error: string }
+type ParsedField = ParsedFieldOk | ParsedFieldErr
+
+function parseProviderOptionField(field: ProviderOptionField, value: unknown): ParsedField {
   const effectiveValue = fieldValue(field, value)
 
   if (effectiveValue === undefined || effectiveValue === null || effectiveValue === "") {
@@ -1478,7 +1723,7 @@ function parseProviderOptionField(field, value) {
   return { ok: true, hasValue: true, value: String(effectiveValue).trim() }
 }
 
-function parseProviderOptionJsonField(value) {
+function parseProviderOptionJsonField(value: unknown): ParsedField {
   if (isPlainObject(value) || Array.isArray(value) || typeof value === "boolean" || typeof value === "number") {
     return { ok: true, hasValue: true, value }
   }
@@ -1488,12 +1733,12 @@ function parseProviderOptionJsonField(value) {
 
   try {
     return { ok: true, hasValue: true, value: JSON.parse(text) }
-  } catch (_error) {
+  } catch {
     return { ok: false, error: "provider_options_json" }
   }
 }
 
-function validateProviders(providers, t) {
+function validateProviders(providers: PreparedProvider[], t: Translate): LLMError[] {
   const errors = providers.flatMap(provider => validateProvider(provider, t))
   const duplicate = duplicateName(providers)
 
@@ -1511,7 +1756,12 @@ function validateProviders(providers, t) {
   return errors
 }
 
-function validateProviderDraft(provider, providers, editingIndex, t) {
+function validateProviderDraft(
+  provider: PreparedProvider,
+  providers: PreparedProvider[],
+  editingIndex: number | null,
+  t: Translate,
+): LLMError[] {
   const otherProviders = providers.filter((_item, index) => index !== editingIndex)
   const errors = validateProvider(provider, t)
   const duplicate = otherProviders.some(item => item.name === provider.name)
@@ -1531,8 +1781,8 @@ function validateProviderDraft(provider, providers, editingIndex, t) {
   return errors
 }
 
-function validateProvider(provider, t) {
-  const errors = []
+function validateProvider(provider: PreparedProvider, t: Translate): LLMError[] {
+  const errors: LLMError[] = []
 
   if (provider.name && !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,192}$/.test(provider.name)) {
     errors.push({ field: "name", message: t("web.setup.llm.errors.name_format") })
@@ -1563,11 +1813,11 @@ function validateProvider(provider, t) {
   return errors
 }
 
-function validateAliases(aliases, providers, t) {
+function validateAliases(aliases: AliasRows, providers: PreparedProvider[], t: Translate): LLMError[] {
   const providerNames = new Set(providers.map(provider => provider.name).filter(Boolean))
   const defaultBinding = aliases.default
-  const errors = []
-  const aliasGraph = {}
+  const errors: LLMError[] = []
+  const aliasGraph: Partial<Record<AliasName, AliasName | null>> = {}
 
   if (defaultBinding?.kind !== "provider" || !defaultBinding.target) {
     errors.push({ message: t("web.setup.llm.errors.default_required") })
@@ -1623,8 +1873,8 @@ function validateAliases(aliases, providers, t) {
   return errors
 }
 
-function normalizeAliases(rows) {
-  const aliases = {
+function normalizeAliases(rows: AliasBinding[] | Record<string, AliasBinding> | undefined): AliasRows {
+  const aliases: AliasRows = {
     default: { kind: "", target: "" },
     fast: { kind: "alias", target: "default" },
     heavy: { kind: "alias", target: "default" },
@@ -1634,8 +1884,8 @@ function normalizeAliases(rows) {
   const list = Array.isArray(rows) ? rows : Object.values(rows || {})
 
   for (const row of list) {
-    const aliasName = row.alias_name
-    if (!ALIASES.includes(aliasName)) continue
+    const aliasName = row.alias_name as AliasName | undefined
+    if (!aliasName || !ALIASES.includes(aliasName)) continue
 
     if (row.kind === "provider") {
       aliases[aliasName] = { kind: "provider", target: row.target || "" }
@@ -1658,7 +1908,7 @@ function normalizeAliases(rows) {
   return aliases
 }
 
-function aliasPayload(aliases) {
+function aliasPayload(aliases: AliasRows): Record<AliasName, { kind: AliasBinding["kind"] | undefined; target: string | undefined }> {
   return Object.fromEntries(ALIASES.map(aliasName => {
     const binding = aliases[aliasName]
 
@@ -1673,10 +1923,10 @@ function aliasPayload(aliases) {
     }
 
     return [aliasName, { kind: binding?.kind, target: binding?.target }]
-  }))
+  })) as Record<AliasName, { kind: AliasBinding["kind"] | undefined; target: string | undefined }>
 }
 
-function aliasSummary(aliasName, binding, t) {
+function aliasSummary(aliasName: AliasName, binding: AliasBinding | undefined, t: Translate): string {
   if (binding?.kind === "provider" && binding.target) {
     return t("web.setup.llm.aliases.bound_provider", {
       values: { target: binding.target },
@@ -1690,7 +1940,7 @@ function aliasSummary(aliasName, binding, t) {
   return t("web.setup.llm.aliases.unbound")
 }
 
-function retargetAliases(aliases, previousName, nextName) {
+function retargetAliases(aliases: AliasRows, previousName: string | null, nextName: string): AliasRows {
   if (!previousName || previousName === nextName) return aliases
 
   return Object.fromEntries(ALIASES.map(aliasName => {
@@ -1701,10 +1951,10 @@ function retargetAliases(aliases, previousName, nextName) {
     }
 
     return [aliasName, binding]
-  }))
+  })) as AliasRows
 }
 
-function removeAliasTargets(aliases, removedName) {
+function removeAliasTargets(aliases: AliasRows, removedName: string): AliasRows {
   return Object.fromEntries(ALIASES.map(aliasName => {
     const binding = aliases[aliasName]
 
@@ -1714,51 +1964,59 @@ function removeAliasTargets(aliases, removedName) {
     }
 
     return [aliasName, binding]
-  }))
+  })) as AliasRows
 }
 
-function defaultAliasTarget(aliasName) {
+function defaultAliasTarget(aliasName: AliasName): AliasName {
   return DEFAULT_ALIAS_TARGETS[aliasName] || "default"
 }
 
-function aliasTargetOptions(aliasName) {
+function aliasTargetOptions(aliasName: AliasName): AliasName[] {
   if (aliasName === "default") return []
   return ALIASES.filter(item => item !== aliasName)
 }
 
-function aliasTargetForBinding(aliasName, binding) {
-  const target = binding?.target || defaultAliasTarget(aliasName)
+function aliasTargetForBinding(aliasName: AliasName, binding: AliasBinding | undefined): AliasName {
+  const target = (binding?.target || defaultAliasTarget(aliasName)) as AliasName
   return aliasTargetOptions(aliasName).includes(target) ? target : defaultAliasTarget(aliasName)
 }
 
-function aliasTargetSummary(aliasName, t, target = defaultAliasTarget(aliasName)) {
+function aliasTargetSummary(
+  aliasName: AliasName,
+  t: Translate,
+  target: AliasName = defaultAliasTarget(aliasName),
+): string {
   return t("web.setup.llm.aliases.fallback_provider", {
     values: { target },
   })
 }
 
-function aliasTargetModeLabel(aliasName, t, target = defaultAliasTarget(aliasName)) {
+function aliasTargetModeLabel(
+  aliasName: AliasName,
+  t: Translate,
+  target: AliasName = defaultAliasTarget(aliasName),
+): string {
   return t("web.setup.llm.aliases.modes.fallback_provider", {
     values: { target },
   })
 }
 
-function aliasModeLabel(aliasName, mode, t) {
+function aliasModeLabel(aliasName: AliasName, mode: string, t: Translate): string {
   if (mode.startsWith("alias:")) {
-    return aliasTargetModeLabel(aliasName, t, mode.replace("alias:", ""))
+    return aliasTargetModeLabel(aliasName, t, mode.replace("alias:", "") as AliasName)
   }
 
   return t(`web.setup.llm.aliases.modes.${mode}`)
 }
 
-function aliasSelectMode(aliasName, binding) {
+function aliasSelectMode(aliasName: AliasName, binding: AliasBinding | undefined): string {
   if (binding?.kind === "provider") return "provider"
   if (aliasName === "default") return "provider"
   return `alias:${aliasTargetForBinding(aliasName, binding)}`
 }
 
-function findAliasCycle(graph) {
-  const effectiveGraph = {
+function findAliasCycle(graph: Partial<Record<AliasName, AliasName | null>>): AliasName[] | null {
+  const effectiveGraph: Partial<Record<AliasName, AliasName | null>> = {
     fast: "default",
     heavy: "default",
     compression: "fast",
@@ -1773,7 +2031,11 @@ function findAliasCycle(graph) {
   return null
 }
 
-function aliasCycleFrom(aliasName, graph, path) {
+function aliasCycleFrom(
+  aliasName: AliasName,
+  graph: Partial<Record<AliasName, AliasName | null>>,
+  path: AliasName[],
+): AliasName[] | null {
   if (path.includes(aliasName)) return [...path, aliasName]
 
   const target = graph[aliasName]
@@ -1782,16 +2044,16 @@ function aliasCycleFrom(aliasName, graph, path) {
   return aliasCycleFrom(target, graph, [...path, aliasName])
 }
 
-function catalogEntryFor(catalog, providerId) {
+function catalogEntryFor(catalog: ProviderCatalogEntry[], providerId: string): ProviderCatalogEntry | undefined {
   return catalog.find(item => item.id === providerId)
 }
 
-function providerApiKeySupported(providerId, catalog = []) {
+function providerApiKeySupported(providerId: string, catalog: ProviderCatalogEntry[] = []): boolean {
   const catalogEntry = catalogEntryFor(catalog, providerId)
   return catalogEntry ? catalogEntry.api_key_supported : true
 }
 
-function endpointDefaultName(provider) {
+function endpointDefaultName(provider: { provider_id?: string; model_id?: string }): string {
   const providerId = trimmed(provider.provider_id)
   const modelId = trimmed(provider.model_id)
 
@@ -1800,7 +2062,7 @@ function endpointDefaultName(provider) {
   return `${providerId}/${modelId}`
 }
 
-function providerLabel(providerId, catalog, t) {
+function providerLabel(providerId: string, catalog: ProviderCatalogEntry[], t?: Translate): string {
   const id = catalogEntryFor(catalog, providerId)?.id || providerId
   if (!id) return ""
 
@@ -1808,30 +2070,30 @@ function providerLabel(providerId, catalog, t) {
   return t ? t(`web.setup.llm.provider_catalog.${id}`, { defaultValue: fallback }) : fallback
 }
 
-function providerLabelFromId(providerId) {
+function providerLabelFromId(providerId: string): string {
   if (!providerId) return ""
 
   return providerId[0].toUpperCase() + providerId.slice(1)
 }
 
-function providerOptionLabel(field, t) {
+function providerOptionLabel(field: ProviderOptionField, t: Translate): string {
   const fallback = field.label || field.key
   return t(`web.setup.llm.provider_options.${field.key}.label`, { defaultValue: fallback })
 }
 
-function providerOptionDescription(field, t) {
+function providerOptionDescription(field: ProviderOptionField, t: Translate): string {
   return t(`web.setup.llm.provider_options.${field.key}.description`, {
     defaultValue: field.doc || "",
   })
 }
 
-function providerOptionValueLabel(field, value, t) {
+function providerOptionValueLabel(field: ProviderOptionField, value: string, t: Translate): string {
   return t(`web.setup.llm.provider_options.${field.key}.options.${value}`, {
     defaultValue: value,
   })
 }
 
-function providerOptionDefaults(catalogEntry) {
+function providerOptionDefaults(catalogEntry: ProviderCatalogEntry | undefined): Record<string, unknown> {
   return Object.fromEntries(
     (catalogEntry?.provider_options || [])
       .filter(field => field.default !== undefined && field.default !== null)
@@ -1839,18 +2101,18 @@ function providerOptionDefaults(catalogEntry) {
   )
 }
 
-function fieldValue(field, value) {
+function fieldValue(field: ProviderOptionField, value: unknown): unknown {
   if (value !== undefined && value !== null && value !== "") return value
   if (field.default !== undefined && field.default !== null) return field.default
   return value
 }
 
-function stringValue(value) {
+function stringValue(value: unknown): string {
   if (value === undefined || value === null) return ""
   return String(value)
 }
 
-function jsonEditorData(value, field) {
+function jsonEditorData(value: unknown, field: ProviderOptionField): unknown {
   if (value === undefined || value === null || value === "") {
     return jsonEditorEmptyValue(field)
   }
@@ -1859,16 +2121,16 @@ function jsonEditorData(value, field) {
 
   try {
     return JSON.parse(value)
-  } catch (_error) {
+  } catch {
     return value
   }
 }
 
-function jsonEditorEmptyValue(field) {
+function jsonEditorEmptyValue(field: ProviderOptionField): unknown {
   return field.type?.includes(":list") ? [] : {}
 }
 
-function jsonEditorTranslations(t) {
+function jsonEditorTranslations(t: Translate): Record<string, string> {
   return {
     KEY_NEW: t("web.setup.llm.json_editor.key_new"),
     KEY_SELECT: t("web.setup.llm.json_editor.key_select"),
@@ -1889,8 +2151,8 @@ function jsonEditorTranslations(t) {
   }
 }
 
-function duplicateName(providers) {
-  const seen = new Set()
+function duplicateName(providers: PreparedProvider[]): string | null {
+  const seen = new Set<string>()
 
   for (const provider of providers) {
     if (!provider.name) continue
@@ -1901,29 +2163,29 @@ function duplicateName(providers) {
   return null
 }
 
-function errorsByField(errors) {
-  return errors.reduce((fields, error) => {
+function errorsByField(errors: LLMError[]): Record<string, string> {
+  return errors.reduce<Record<string, string>>((fields, error) => {
     const field = errorField(error)
     if (field && !fields[field]) fields[field] = error.message
     return fields
   }, {})
 }
 
-function errorsWithoutFields(errors) {
+function errorsWithoutFields(errors: LLMError[]): LLMError[] {
   return errors.filter(error => !errorField(error))
 }
 
-function errorField(error) {
+function errorField(error: LLMError): string | undefined {
   const field = error.field || error.details?.field || error.details?.field_path
-  if (!field) return null
+  if (!field) return undefined
 
   return field.split(".").at(-1)
 }
 
-function trimmed(value) {
+function trimmed(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }

@@ -13,6 +13,7 @@ defmodule BullXAIAgent.Kind.AgenticChatLoop do
   alias BullXAIAgent.Reasoning.AgenticLoop
   alias BullXAIAgent.Reasoning.AgenticLoop.Config, as: AgenticLoopConfig
   alias BullXAIAgent.Reasoning.AgenticLoop.State, as: AgenticLoopState
+  alias BullXAIAgent.Runtime.Event, as: RuntimeEvent
 
   @baseline_system_prompt """
   You are BullX, an AI assistant operating inside the BullX runtime. Follow operator instructions, preserve user privacy, and give direct, useful answers.
@@ -114,9 +115,48 @@ defmodule BullXAIAgent.Kind.AgenticChatLoop do
         query: user_text,
         context: %{refs: refs}
       )
+      |> maybe_emit_stream_deltas(opts)
 
     {:ok, collect_stream(runner, events)}
   end
+
+  defp maybe_emit_stream_deltas(events, opts) do
+    case Keyword.get(opts, :stream_delta_fun) do
+      fun when is_function(fun, 1) ->
+        Stream.map(events, fn event ->
+          emit_stream_delta(event, fun)
+          event
+        end)
+
+      _ ->
+        events
+    end
+  end
+
+  defp emit_stream_delta(%RuntimeEvent{kind: :llm_delta, data: data}, fun) when is_map(data) do
+    maybe_emit_content_delta(data, fun)
+  end
+
+  defp emit_stream_delta(%{kind: :llm_delta, data: data}, fun) when is_map(data) do
+    maybe_emit_content_delta(data, fun)
+  end
+
+  defp emit_stream_delta(_event, _fun), do: :ok
+
+  defp maybe_emit_content_delta(data, fun) do
+    chunk_type = Map.get(data, :chunk_type, Map.get(data, "chunk_type", :content))
+    delta = Map.get(data, :delta, Map.get(data, "delta"))
+
+    case {content_chunk?(chunk_type), delta} do
+      {true, delta} when is_binary(delta) and delta != "" ->
+        fun.(delta)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp content_chunk?(chunk_type), do: chunk_type in [:content, "content"]
 
   defp collect_stream(runner, events) do
     case function_exported?(runner, :collect_stream, 1) do

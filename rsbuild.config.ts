@@ -57,7 +57,7 @@ export default defineConfig({
   source: {
     entry: {
       app: {
-        import: ["./webui/src/app.jsx", "./webui/src/globals.css"],
+        import: ["./webui/src/app.tsx", "./webui/src/globals.css"],
         html: false,
       },
     },

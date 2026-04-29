@@ -24,6 +24,22 @@ defmodule BullXAIAgent.Kind.AgenticChatLoopTest do
     end
   end
 
+  defmodule FakeStreamingRunner do
+    def stream_from_state(_state, %Config{}, _opts) do
+      [
+        %{kind: :llm_delta, data: %{chunk_type: :content, delta: "hello"}},
+        %{kind: :llm_delta, data: %{chunk_type: :tool_call, delta: "tool-name"}},
+        %{kind: :llm_delta, data: %{"chunk_type" => "content", "delta" => " world"}},
+        %{kind: :request_completed, data: %{}}
+      ]
+    end
+
+    def collect_stream(events) do
+      _events = Enum.to_list(events)
+      %{result: "streamed answer", usage: %{}, trace: []}
+    end
+  end
+
   setup do
     allow_cache(Cache)
     Cache.refresh_all()
@@ -77,6 +93,27 @@ defmodule BullXAIAgent.Kind.AgenticChatLoopTest do
              %{role: :user, content: "next"},
              %{role: :assistant, content: "assistant answer"}
            ] = AIContext.to_messages(result.context)
+  end
+
+  test "emits only content deltas through the runtime stream callback" do
+    assert {:ok, provider} = LLMWriter.put_provider(provider_attrs())
+    assert {:ok, _binding} = LLMWriter.put_alias_binding(:default, {:provider, provider.name})
+
+    assert {:ok, %{answer: "streamed answer"}} =
+             AgenticChatLoop.run(
+               %{
+                 target: target(),
+                 context: AIContext.new(),
+                 user_text: "stream",
+                 refs: %{signal_id: "sig-stream", route_key: "route", target_key: "chat"}
+               },
+               agentic_loop_module: FakeStreamingRunner,
+               stream_delta_fun: fn delta -> send(self(), {:stream_delta, delta}) end
+             )
+
+    assert_receive {:stream_delta, "hello"}
+    assert_receive {:stream_delta, " world"}
+    refute_receive {:stream_delta, "tool-name"}, 100
   end
 
   defp target do

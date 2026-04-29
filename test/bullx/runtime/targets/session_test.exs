@@ -26,6 +26,23 @@ defmodule BullX.Runtime.Targets.SessionTest do
     end
   end
 
+  defmodule FakeStreamingKind do
+    def run(%{context: %AIContext{} = context, user_text: user_text}, opts) do
+      stream_delta_fun = Keyword.fetch!(opts, :stream_delta_fun)
+      stream_delta_fun.("abc")
+      stream_delta_fun.("defghijk")
+
+      answer = "answer: #{user_text}"
+
+      updated_context =
+        context
+        |> AIContext.append_user(user_text)
+        |> AIContext.append_assistant(answer)
+
+      {:ok, %{answer: answer, context: updated_context, usage: %{}, trace: []}}
+    end
+  end
+
   defmodule FakeGateway do
     use Agent
 
@@ -34,6 +51,21 @@ defmodule BullX.Runtime.Targets.SessionTest do
     def deliver(%Delivery{} = delivery) do
       test_pid = Agent.get(__MODULE__, & &1)
       send(test_pid, {:delivered, delivery})
+      {:ok, delivery.id}
+    end
+  end
+
+  defmodule FakeStreamingGateway do
+    use Agent
+
+    def start_link(test_pid), do: Agent.start_link(fn -> test_pid end, name: __MODULE__)
+
+    def stream_supported?({:session_test, "default"}), do: true
+    def stream_supported?(_channel), do: false
+
+    def deliver(%Delivery{} = delivery) do
+      test_pid = Agent.get(__MODULE__, & &1)
+      send(test_pid, {:stream_delivered, delivery})
       {:ok, delivery.id}
     end
   end
@@ -83,6 +115,26 @@ defmodule BullX.Runtime.Targets.SessionTest do
                test_pid: self()
              )
 
+    refute_receive {:delivered, _delivery}, 100
+  end
+
+  test "uses stream delivery and emits deltas when the gateway supports streaming" do
+    {:ok, _pid} = FakeStreamingGateway.start_link(self())
+    on_exit(fn -> stop_fake_streaming_gateway() end)
+
+    {:ok, session} =
+      Session.start_link(session_key: {:session_stream_test, System.unique_integer()})
+
+    assert {:ok, %{answer: "answer: stream", delivery_id: delivery_id}} =
+             Session.turn(session, resolution(), signal("sig-stream", "stream"),
+               kind_module: FakeStreamingKind,
+               gateway_module: FakeStreamingGateway,
+               test_pid: self()
+             )
+
+    assert_receive {:stream_delivered, %Delivery{op: :stream, content: stream} = delivery}
+    assert delivery.id == delivery_id
+    assert Enum.to_list(stream) == ["abc", "defghijk", %{replace_text: "answer: stream"}]
     refute_receive {:delivered, _delivery}, 100
   end
 
@@ -153,6 +205,18 @@ defmodule BullX.Runtime.Targets.SessionTest do
 
   defp stop_fake_gateway do
     case Process.whereis(FakeGateway) do
+      nil ->
+        :ok
+
+      pid ->
+        Agent.stop(pid)
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp stop_fake_streaming_gateway do
+    case Process.whereis(FakeStreamingGateway) do
       nil ->
         :ok
 

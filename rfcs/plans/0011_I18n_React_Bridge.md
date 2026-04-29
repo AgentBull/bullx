@@ -452,7 +452,6 @@ Initial keys for `priv/locales/client/en-US.toml`:
 [web.sessions.new]
 title = "Sign In"
 brand = "BullX"
-subtitle = "Session SPA"
 placeholder = "Login screen placeholder. Auth-code submission will post to {$form_action}."
 
 [web.setup]

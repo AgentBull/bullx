@@ -49,6 +49,22 @@ defmodule BullXGateway.DeliverTest do
     end
   end
 
+  defmodule StreamCapableAdapter do
+    @behaviour BullXGateway.Adapter
+
+    @impl true
+    def adapter_id, do: :stream_capable
+
+    @impl true
+    def config_docs, do: %{"en-US" => "https://example.test/stream-capable"}
+
+    @impl true
+    def connectivity_check(_channel, _config), do: {:ok, %{"status" => "ok"}}
+
+    @impl true
+    def capabilities, do: [:send, :stream]
+  end
+
   setup tags do
     owner = Ecto.Adapters.SQL.Sandbox.start_owner!(BullX.Repo, shared: not tags[:async])
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(owner) end)
@@ -100,6 +116,14 @@ defmodule BullXGateway.DeliverTest do
     assert_eventually_deduped(delivery_id)
 
     assert :error = ControlPlane.fetch_dead_letter(delivery_id)
+  end
+
+  test "reports whether a registered channel supports streaming" do
+    channel = {:stream_capable, unique_channel_id()}
+    AdapterRegistry.register(channel, StreamCapableAdapter, %{})
+
+    assert Gateway.stream_supported?(channel)
+    refute Gateway.stream_supported?({:unknown_stream_adapter, "missing"})
   end
 
   defp subscribe_delivery! do

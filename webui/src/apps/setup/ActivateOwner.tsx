@@ -13,7 +13,24 @@ import SetupLayout from "./Layout"
 
 const POLL_INTERVAL_MS = 5000
 
-export default function SetupActivateOwner({ app_name, command, back_path, status_path }) {
+interface SetupActivateOwnerProps {
+  app_name: string
+  command: string
+  back_path: string
+  status_path: string
+}
+
+interface ActivationStatus {
+  activated: boolean
+  redirect_to?: string
+}
+
+export default function SetupActivateOwner({
+  app_name,
+  command,
+  back_path,
+  status_path,
+}: SetupActivateOwnerProps) {
   const { t } = useTranslation()
 
   React.useEffect(() => {
@@ -28,9 +45,9 @@ export default function SetupActivateOwner({ app_name, command, back_path, statu
           headers: { accept: "application/json" },
         })
         if (cancelled) return
-        const data = await response.json()
+        const data = (await response.json()) as ActivationStatus
         if (data?.activated) window.location.assign(data.redirect_to || "/")
-      } catch (_error) {
+      } catch {
         // swallow transient network errors and try again next tick
       }
     }

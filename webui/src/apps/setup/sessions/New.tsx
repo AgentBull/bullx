@@ -1,3 +1,4 @@
+import React from "react"
 import { useForm, usePage } from "@inertiajs/react"
 import { useTranslation } from "react-i18next"
 import { RiArrowRightLine } from "@remixicon/react"
@@ -25,16 +26,27 @@ import {
 } from "@/uikit/components/select"
 import SetupLayout from "../Layout"
 
-const LOCALE_LABELS = {
+const LOCALE_LABELS: Record<string, string> = {
   "en-US": "English",
   "zh-Hans-CN": "简体中文",
 }
 
-function localeLabel(code) {
+interface SetupSessionNewProps {
+  form_action: string
+  current_locale: string
+  available_locales: string[]
+}
+
+interface FlashProps {
+  [key: string]: unknown
+  flash?: { error?: string }
+}
+
+function localeLabel(code: string): string {
   return LOCALE_LABELS[code] || code
 }
 
-function normalizeActivationCode(value) {
+function normalizeActivationCode(value: string): string {
   return value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 8)
 }
 
@@ -42,9 +54,9 @@ export default function SetupSessionNew({
   form_action,
   current_locale,
   available_locales,
-}) {
+}: SetupSessionNewProps) {
   const { t } = useTranslation()
-  const { props } = usePage()
+  const { props } = usePage<FlashProps>()
   const flashError = props?.flash?.error
 
   const { data, setData, post, processing } = useForm({
@@ -52,16 +64,17 @@ export default function SetupSessionNew({
     locale: current_locale,
   })
 
-  const handleLocaleChange = (value) => {
+  const handleLocaleChange = (value: string | null) => {
+    if (!value) return
     setData("locale", value)
     i18n.changeLanguage(value)
   }
 
-  const handleCodeChange = (value) => {
+  const handleCodeChange = (value: string) => {
     setData("bootstrap_code", normalizeActivationCode(value))
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     post(form_action)
   }

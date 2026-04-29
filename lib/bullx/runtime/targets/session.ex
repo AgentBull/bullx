@@ -3,6 +3,7 @@ defmodule BullX.Runtime.Targets.Session do
 
   use GenServer
 
+  alias BullX.Runtime.Targets.StreamSink
   alias BullX.Runtime.Targets.Target
   alias BullX.Runtime.Targets.SessionRegistry
   alias BullXAIAgent.Context, as: AIContext
@@ -99,7 +100,9 @@ defmodule BullX.Runtime.Targets.Session do
         }
       }
 
-      case kind_module.run(input, opts) do
+      stream_reply = start_stream_reply(signal, target, resolution.route, opts)
+
+      case kind_module.run(input, maybe_put_stream_delta_fun(opts, stream_reply)) do
         {:ok, %{answer: answer, context: %AIContext{} = context} = output}
         when is_binary(answer) ->
           next_state = %{state | context: context}
@@ -110,12 +113,14 @@ defmodule BullX.Runtime.Targets.Session do
             metadata
           )
 
-          case deliver_reply(signal, target, resolution.route, answer, opts) do
+          case complete_reply(stream_reply, signal, target, resolution.route, answer, opts) do
             {:ok, delivery_id} -> {:ok, Map.put(output, :delivery_id, delivery_id), next_state}
             {:error, reason} -> {:error, {:reply_failed, reason}, next_state}
           end
 
         {:error, reason} ->
+          fail_stream_reply(stream_reply, reason)
+
           :telemetry.execute(
             [:bullx, :runtime, :targets, :turn_failed],
             %{duration_ms: System.monotonic_time(:millisecond) - started_at},
@@ -132,6 +137,90 @@ defmodule BullX.Runtime.Targets.Session do
         {:error, reason, state}
     end
   end
+
+  defp start_stream_reply(%Signal{} = signal, %Target{} = target, route, opts) do
+    case Keyword.get(opts, :stream_replies?, true) do
+      true -> do_start_stream_reply(signal, target, route, opts)
+      false -> :final
+    end
+  end
+
+  defp do_start_stream_reply(%Signal{} = signal, %Target{} = target, route, opts) do
+    reply_channel = signal.data["reply_channel"]
+    gateway = gateway_module(opts)
+
+    with {:ok, adapter} <- adapter_atom(reply_channel["adapter"]),
+         channel <- {adapter, reply_channel["channel_id"]},
+         true <- stream_supported?(gateway, channel),
+         {:ok, sink} <- StreamSink.start_link([]) do
+      enqueue_stream_reply(gateway, signal, reply_channel, adapter, target, route, sink)
+    else
+      _reason ->
+        :final
+    end
+  end
+
+  defp enqueue_stream_reply(gateway, signal, reply_channel, adapter, target, route, sink) do
+    with {:ok, delivery} <-
+           build_delivery(
+             signal,
+             reply_channel,
+             adapter,
+             target,
+             route,
+             :stream,
+             StreamSink.stream(sink)
+           ),
+         {:ok, delivery_id} <- gateway.deliver(delivery) do
+      :telemetry.execute(
+        [:bullx, :runtime, :targets, :reply_enqueued],
+        %{count: 1},
+        telemetry_metadata(target, route, signal)
+      )
+
+      {:stream, %{sink: sink, delivery_id: delivery_id}}
+    else
+      _reason ->
+        stop_stream_sink(sink)
+        :final
+    end
+  end
+
+  defp stop_stream_sink(sink) do
+    StreamSink.stop(sink)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp stream_supported?(gateway, channel) do
+    function_exported?(gateway, :stream_supported?, 1) and gateway.stream_supported?(channel)
+  end
+
+  defp maybe_put_stream_delta_fun(opts, {:stream, %{sink: sink}}) do
+    Keyword.put(opts, :stream_delta_fun, &StreamSink.push(sink, &1))
+  end
+
+  defp maybe_put_stream_delta_fun(opts, :final), do: opts
+
+  defp complete_reply(
+         {:stream, %{sink: sink, delivery_id: delivery_id}},
+         _signal,
+         _target,
+         _route,
+         answer,
+         _opts
+       ) do
+    StreamSink.push(sink, %{replace_text: answer})
+    StreamSink.finish(sink)
+    {:ok, delivery_id}
+  end
+
+  defp complete_reply(:final, %Signal{} = signal, %Target{} = target, route, answer, opts) do
+    deliver_reply(signal, target, route, answer, opts)
+  end
+
+  defp fail_stream_reply({:stream, %{sink: sink}}, reason), do: StreamSink.fail(sink, reason)
+  defp fail_stream_reply(:final, _reason), do: :ok
 
   defp ensure_duplex(
          %Signal{data: %{"duplex" => true, "reply_channel" => reply_channel}},
@@ -214,7 +303,16 @@ defmodule BullX.Runtime.Targets.Session do
     reply_channel = signal.data["reply_channel"]
 
     with {:ok, adapter} <- adapter_atom(reply_channel["adapter"]),
-         {:ok, delivery} <- build_delivery(signal, reply_channel, adapter, target, route, answer),
+         {:ok, delivery} <-
+           build_delivery(
+             signal,
+             reply_channel,
+             adapter,
+             target,
+             route,
+             :send,
+             %Content{kind: :text, body: %{"text" => answer}}
+           ),
          {:ok, delivery_id} <- gateway_module(opts).deliver(delivery) do
       :telemetry.execute(
         [:bullx, :runtime, :targets, :reply_enqueued],
@@ -243,17 +341,18 @@ defmodule BullX.Runtime.Targets.Session do
          adapter,
          %Target{} = target,
          route,
-         answer
+         op,
+         content
        ) do
     delivery = %Delivery{
       id: BullX.Ext.gen_uuid_v7(),
-      op: :send,
+      op: op,
       channel: {adapter, reply_channel["channel_id"]},
       scope_id: reply_channel["scope_id"],
       thread_id: reply_channel["thread_id"],
       reply_to_external_id: signal.data["reply_to_external_id"],
       caused_by_signal_id: signal.id,
-      content: %Content{kind: :text, body: %{"text" => answer}},
+      content: content,
       extensions: %{
         "bullx_runtime_target" => target.key,
         "bullx_runtime_route" => route_key(route)

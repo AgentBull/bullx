@@ -4,7 +4,6 @@ close = "关闭"
 [web.sessions.new]
 title = "登录"
 brand = "BullX"
-subtitle = "会话 SPA"
 placeholder = "登录页面占位内容。验证码提交将发送到 {$form_action}。"
 
 [web.setup]

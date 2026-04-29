@@ -46,9 +46,94 @@ import {
 import { Switch } from "@/uikit/components/switch"
 import SetupLayout from "./Layout"
 
-const SECRET_FIELDS = ["app_secret"]
+type Translate = (
+  key: string,
+  options?: { values?: Record<string, unknown>; defaultValue?: string },
+) => string
 
-const FALLBACK_ENTRY = {
+type SecretField = "app_secret"
+type SecretStatus = "missing" | "stored"
+
+interface AdapterAdvanced {
+  dedupe_ttl_ms: number
+  message_context_ttl_ms: number
+  card_action_dedupe_ttl_ms: number
+  inline_media_max_bytes: number
+  stream_update_interval_ms: number
+  state_max_age_seconds: number
+}
+
+interface AdapterCredentials {
+  app_id: string
+  app_secret: string
+}
+
+interface AdapterAuthnExternalOrgMembers {
+  enabled: boolean
+  tenant_key: string
+}
+
+interface AdapterAuthn {
+  external_org_members: AdapterAuthnExternalOrgMembers
+}
+
+interface AdapterEntry {
+  id: string
+  adapter: string
+  channel_id: string
+  enabled: boolean
+  domain: string
+  authn: AdapterAuthn
+  credentials: AdapterCredentials
+  advanced: AdapterAdvanced
+  secret_status: Partial<Record<SecretField, SecretStatus>>
+  config_doc_url?: string
+}
+
+interface AdapterAuthnPolicy {
+  type: string
+}
+
+interface AdapterCatalogEntry {
+  adapter: string
+  label?: string
+  default_entry?: Partial<AdapterEntry>
+  authn_policies?: AdapterAuthnPolicy[]
+  config_doc_url?: string
+}
+
+interface AdapterError {
+  field?: string
+  message: string
+  kind?: string
+  details?: { field?: string; field_path?: string }
+}
+
+interface CheckSuccess {
+  status: "success"
+  token?: string
+  result?: unknown
+}
+
+interface CheckFailure {
+  status: "error"
+  errors: AdapterError[]
+}
+
+type CheckResult = CheckSuccess | CheckFailure
+type ChecksMap = Record<string, CheckResult | undefined>
+
+interface PostJsonResponse {
+  ok?: boolean
+  errors?: AdapterError[]
+  redirect_to?: string
+  connectivity_token?: string
+  result?: unknown
+}
+
+const SECRET_FIELDS: SecretField[] = ["app_secret"]
+
+const FALLBACK_ENTRY: AdapterEntry = {
   id: "feishu:",
   adapter: "feishu",
   channel_id: "",
@@ -77,6 +162,15 @@ const FALLBACK_ENTRY = {
   },
 }
 
+interface SetupAppProps {
+  app_name: string
+  adapter_catalog?: AdapterCatalogEntry[]
+  adapters?: AdapterEntry[]
+  check_path: string
+  save_path: string
+  back_path: string
+}
+
 export default function SetupApp({
   app_name,
   adapter_catalog = [],
@@ -84,19 +178,23 @@ export default function SetupApp({
   check_path,
   save_path,
   back_path,
-}) {
+}: SetupAppProps) {
   const { t } = useTranslation()
-  const [entries, setEntries] = React.useState(() => normalizeEntries(adapters))
-  const [checks, setChecks] = React.useState({})
-  const [serverErrors, setServerErrors] = React.useState([])
-  const [checkingId, setCheckingId] = React.useState(null)
+  const translate = t as Translate
+  const [entries, setEntries] = React.useState<AdapterEntry[]>(() => normalizeEntries(adapters))
+  const [checks, setChecks] = React.useState<ChecksMap>({})
+  const [serverErrors, setServerErrors] = React.useState<AdapterError[]>([])
+  const [checkingId, setCheckingId] = React.useState<string | null>(null)
   const [saving, setSaving] = React.useState(false)
   const [sheetOpen, setSheetOpen] = React.useState(false)
-  const [editingIndex, setEditingIndex] = React.useState(null)
-  const [draft, setDraft] = React.useState(() => newEntry(adapter_catalog))
-  const [draftErrors, setDraftErrors] = React.useState([])
+  const [editingIndex, setEditingIndex] = React.useState<number | null>(null)
+  const [draft, setDraft] = React.useState<AdapterEntry>(() => newEntry(adapter_catalog))
+  const [draftErrors, setDraftErrors] = React.useState<AdapterError[]>([])
 
-  const listErrors = React.useMemo(() => validateEntries(entries, t), [entries, t])
+  const listErrors = React.useMemo(
+    () => validateEntries(entries, translate),
+    [entries, translate],
+  )
   const enabledEntries = entries.filter(entry => entry.enabled !== false)
   const allEnabledChecked = enabledEntries.every(
     entry => checks[entry.id]?.status === "success",
@@ -107,12 +205,14 @@ export default function SetupApp({
     && allEnabledChecked
     && !saving
 
-  const clearChecks = React.useCallback((ids) => {
+  const clearChecks = React.useCallback((ids: string | Array<string | null | undefined>) => {
     const idList = Array.isArray(ids) ? ids : [ids]
 
     setChecks(current => {
       const next = { ...current }
-      for (const id of idList) delete next[id]
+      for (const id of idList) {
+        if (id) delete next[id]
+      }
       return next
     })
   }, [])
@@ -124,7 +224,7 @@ export default function SetupApp({
     setSheetOpen(true)
   }
 
-  const openEditSheet = (index) => {
+  const openEditSheet = (index: number) => {
     setEditingIndex(index)
     setDraft(clone(entries[index]))
     setDraftErrors([])
@@ -133,14 +233,14 @@ export default function SetupApp({
 
   const applyDraft = () => {
     const prepared = prepareEntryForSave(draft)
-    const errors = validateDraft(prepared, entries, editingIndex, t)
+    const errors = validateDraft(prepared, entries, editingIndex, translate)
 
     if (errors.length > 0) {
       setDraftErrors(errors)
       return
     }
 
-    const previousId = editingIndex === null ? null : entries[editingIndex]?.id
+    const previousId = editingIndex === null ? null : entries[editingIndex]?.id ?? null
 
     setEntries(current => {
       if (editingIndex === null) return [...current, prepared]
@@ -150,12 +250,12 @@ export default function SetupApp({
       ))
     })
 
-    clearChecks([previousId, prepared.id].filter(Boolean))
+    clearChecks([previousId, prepared.id].filter((value): value is string => Boolean(value)))
     setServerErrors([])
     setSheetOpen(false)
   }
 
-  const removeEntry = (index) => {
+  const removeEntry = (index: number) => {
     const entry = entries[index]
 
     setEntries(current => current.filter((_item, itemIndex) => itemIndex !== index))
@@ -163,9 +263,9 @@ export default function SetupApp({
     setServerErrors([])
   }
 
-  const runCheck = async (entry) => {
+  const runCheck = async (entry: AdapterEntry) => {
     const prepared = prepareEntryForSave(entry)
-    const errors = validateEntry(prepared, t)
+    const errors = validateEntry(prepared, translate)
 
     if (errors.length > 0) {
       setServerErrors(errors)
@@ -214,8 +314,8 @@ export default function SetupApp({
       adapters: preparedEntries,
       connectivity_tokens: Object.fromEntries(
         preparedEntries
-          .map(entry => [entry.id, checks[entry.id]])
-          .filter(([_id, check]) => check?.status === "success")
+          .map(entry => [entry.id, checks[entry.id]] as const)
+          .filter((pair): pair is readonly [string, CheckSuccess] => pair[1]?.status === "success")
           .map(([id, check]) => [id, check.token]),
       ),
     })
@@ -233,16 +333,16 @@ export default function SetupApp({
   }
 
   return (
-    <SetupLayout title={t("web.setup.title")} appName={app_name}>
+    <SetupLayout title={translate("web.setup.title")} appName={app_name}>
       <section className="grid flex-1 place-items-center py-8 sm:py-10">
         <Card size="sm" className="w-full max-w-4xl gap-0 bg-card py-0">
           <CardHeader className="border-b border-border px-5 py-4 sm:px-6">
             <div className="min-w-0">
               <p className="text-xs font-medium text-primary">
-                {t("web.setup.gateway.step")}
+                {translate("web.setup.gateway.step")}
               </p>
               <CardTitle className="mt-1 text-xl font-semibold">
-                {t("web.setup.gateway.heading")}
+                {translate("web.setup.gateway.heading")}
               </CardTitle>
             </div>
           </CardHeader>
@@ -251,13 +351,13 @@ export default function SetupApp({
             <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {t("web.setup.gateway.description")}
+                  {translate("web.setup.gateway.description")}
                 </p>
               </div>
               {entries.length > 0 ? (
                 <Button type="button" onClick={openNewSheet}>
                   <RiAddLine data-icon="inline-start" />
-                  <span>{t("web.setup.gateway.add_adapter")}</span>
+                  <span>{translate("web.setup.gateway.add_adapter")}</span>
                 </Button>
               ) : null}
             </div>
@@ -291,12 +391,12 @@ export default function SetupApp({
               onClick={() => window.location.assign(back_path)}
             >
               <RiArrowLeftLine data-icon="inline-start" />
-              <span>{t("web.setup.gateway.actions.back_to_llm")}</span>
+              <span>{translate("web.setup.gateway.actions.back_to_llm")}</span>
             </Button>
             <Button type="button" onClick={saveAdapters} disabled={!canSave}>
               <RiSaveLine data-icon="inline-start" />
               <span>
-                {saving ? t("web.setup.gateway.saving") : t("web.setup.gateway.save")}
+                {saving ? translate("web.setup.gateway.saving") : translate("web.setup.gateway.save")}
               </span>
             </Button>
           </CardFooter>
@@ -321,6 +421,16 @@ export default function SetupApp({
   )
 }
 
+interface AdapterRowProps {
+  entry: AdapterEntry
+  catalog: AdapterCatalogEntry[]
+  check: CheckResult | undefined
+  checking: boolean
+  onCheck: () => void
+  onEdit: () => void
+  onRemove: () => void
+}
+
 function AdapterRow({
   entry,
   catalog,
@@ -329,17 +439,18 @@ function AdapterRow({
   onCheck,
   onEdit,
   onRemove,
-}) {
+}: AdapterRowProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
   const prepared = prepareEntryForSave(entry)
-  const invalid = prepared.enabled && validateEntry(prepared, t).length > 0
+  const invalid = prepared.enabled && validateEntry(prepared, translate).length > 0
   const connected = check?.status === "success"
   const tenantPolicy = prepared.authn.external_org_members
   const metadata = [
-    prepared.channel_id || t("web.setup.gateway.fields.channel_id"),
+    prepared.channel_id || translate("web.setup.gateway.fields.channel_id"),
     domainLabel(prepared.domain),
     tenantPolicy.enabled && tenantPolicy.tenant_key
-      ? t("web.setup.gateway.authorization.tenant_key_summary", {
+      ? translate("web.setup.gateway.authorization.tenant_key_summary", {
         values: { tenant_key: tenantPolicy.tenant_key },
       })
       : null,
@@ -375,13 +486,13 @@ function AdapterRow({
           onClick={onCheck}
         >
           <RiPlugLine data-icon="inline-start" />
-          <span>{t("web.setup.gateway.actions.check")}</span>
+          <span>{translate("web.setup.gateway.actions.check")}</span>
         </Button>
         <Button
           type="button"
           size="icon-sm"
           variant="ghost"
-          aria-label={t("web.setup.gateway.actions.edit")}
+          aria-label={translate("web.setup.gateway.actions.edit")}
           onClick={onEdit}
         >
           <RiEditLine />
@@ -390,7 +501,7 @@ function AdapterRow({
           type="button"
           size="icon-sm"
           variant="ghost"
-          aria-label={t("web.setup.gateway.actions.remove")}
+          aria-label={translate("web.setup.gateway.actions.remove")}
           onClick={onRemove}
         >
           <RiDeleteBinLine />
@@ -400,25 +511,38 @@ function AdapterRow({
   )
 }
 
-function EmptyState({ onAdd }) {
+function EmptyState({ onAdd }: { onAdd: () => void }) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <div className="grid min-h-48 place-items-center border border-border bg-background-secondary px-4 py-10 text-center">
       <div className="grid justify-items-center gap-4">
         <div>
-          <p className="text-base font-medium">{t("web.setup.gateway.empty_title")}</p>
+          <p className="text-base font-medium">{translate("web.setup.gateway.empty_title")}</p>
           <p className="mt-2 text-sm text-muted-foreground">
-            {t("web.setup.gateway.empty_description")}
+            {translate("web.setup.gateway.empty_description")}
           </p>
         </div>
         <Button type="button" onClick={onAdd}>
           <RiAddLine data-icon="inline-start" />
-          <span>{t("web.setup.gateway.add_adapter")}</span>
+          <span>{translate("web.setup.gateway.add_adapter")}</span>
         </Button>
       </div>
     </div>
   )
+}
+
+interface AdapterSheetProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  draft: AdapterEntry
+  setDraft: (entry: AdapterEntry) => void
+  errors: AdapterError[]
+  catalog: AdapterCatalogEntry[]
+  entries: AdapterEntry[]
+  editing: boolean
+  onApply: () => void
 }
 
 function AdapterSheet({
@@ -431,12 +555,13 @@ function AdapterSheet({
   entries,
   editing,
   onApply,
-}) {
+}: AdapterSheetProps) {
   const { t } = useTranslation()
-  const [mode, setMode] = React.useState(editing ? "configure" : "select")
+  const translate = t as Translate
+  const [mode, setMode] = React.useState<"select" | "configure">(editing ? "configure" : "select")
   const [advancedOpen, setAdvancedOpen] = React.useState(false)
-  const advancedContentRef = React.useRef(null)
-  const catalogOptions = catalog.length
+  const advancedContentRef = React.useRef<HTMLDivElement | null>(null)
+  const catalogOptions: AdapterCatalogEntry[] = catalog.length
     ? catalog
     : [{
       adapter: "feishu",
@@ -468,11 +593,11 @@ function AdapterSheet({
     })
   }, [advancedOpen])
 
-  const update = (path, value) => {
+  const update = (path: string[], value: unknown) => {
     setDraft(setPath(draft, path, value))
   }
 
-  const chooseAdapter = (catalogEntry) => {
+  const chooseAdapter = (catalogEntry: AdapterCatalogEntry) => {
     const adapter = catalogEntry.adapter
     const next = mergeEntry({
       ...(catalogEntry?.default_entry || {}),
@@ -501,10 +626,10 @@ function AdapterSheet({
             <div className="min-w-0">
               <SheetTitle>
                 {mode === "select"
-                  ? t("web.setup.gateway.sheet.select_title")
+                  ? translate("web.setup.gateway.sheet.select_title")
                   : editing
-                  ? t("web.setup.gateway.sheet.edit_title")
-                  : t("web.setup.gateway.sheet.add_title")}
+                  ? translate("web.setup.gateway.sheet.edit_title")
+                  : translate("web.setup.gateway.sheet.add_title")}
               </SheetTitle>
               <SheetDescription>
                 {mode == "select" ? (
@@ -527,14 +652,14 @@ function AdapterSheet({
                   onClick={() => window.open(docUrl, "_blank", "noopener,noreferrer")}
                 >
                   <RiExternalLinkLine data-icon="inline-start" />
-                  <span>{t("web.setup.gateway.docs")}</span>
+                  <span>{translate("web.setup.gateway.docs")}</span>
                 </Button>
               ) : null}
               <Button
                 type="button"
                 size="icon-sm"
                 variant="ghost"
-                aria-label={t("app.close")}
+                aria-label={translate("app.close")}
                 onClick={() => onOpenChange(false)}
               >
                 <RiCloseLine />
@@ -550,10 +675,10 @@ function AdapterSheet({
             <>
               <ErrorList errors={formErrors} />
 
-              <FormSection title={t("web.setup.gateway.sections.channel")}>
+              <FormSection title={translate("web.setup.gateway.sections.channel")}>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
-                    label={t("web.setup.gateway.fields.channel_id")}
+                    label={translate("web.setup.gateway.fields.channel_id")}
                     required
                     error={fieldErrors.channel_id}
                   >
@@ -567,10 +692,10 @@ function AdapterSheet({
                     />
                   </Field>
 
-                  <Field label={t("web.setup.gateway.fields.domain")}>
+                  <Field label={translate("web.setup.gateway.fields.domain")}>
                     <Select
                       value={draft.domain}
-                      onValueChange={value => update(["domain"], value)}
+                      onValueChange={(value: string | null) => update(["domain"], value ?? "")}
                     >
                       <SelectTrigger className="w-full">
                         <span data-slot="select-value">{domainLabel(draft.domain)}</span>
@@ -585,30 +710,30 @@ function AdapterSheet({
               </FormSection>
 
               {supportsExternalOrgMembers ? (
-                <FormSection title={t("web.setup.gateway.sections.authorization")}>
+                <FormSection title={translate("web.setup.gateway.sections.authorization")}>
                   <div className="grid gap-4">
                     <div className="flex items-start justify-between gap-4 border border-border bg-background-secondary p-4">
                       <div className="min-w-0">
                         <p className="text-sm font-medium">
-                          {t("web.setup.gateway.authorization.external_org_members")}
+                          {translate("web.setup.gateway.authorization.external_org_members")}
                         </p>
                         <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                          {t("web.setup.gateway.authorization.external_org_members_description")}
+                          {translate("web.setup.gateway.authorization.external_org_members_description")}
                         </p>
                       </div>
                       <Switch
                         checked={Boolean(draft.authn.external_org_members.enabled)}
-                        onCheckedChange={checked => update(
+                        onCheckedChange={(checked: boolean) => update(
                           ["authn", "external_org_members", "enabled"],
                           checked,
                         )}
-                        aria-label={t("web.setup.gateway.authorization.external_org_members")}
+                        aria-label={translate("web.setup.gateway.authorization.external_org_members")}
                       />
                     </div>
 
                     {draft.authn.external_org_members.enabled ? (
                       <Field
-                        label={t("web.setup.gateway.fields.tenant_key")}
+                        label={translate("web.setup.gateway.fields.tenant_key")}
                         required
                         error={fieldErrors["authn.external_org_members.tenant_key"]}
                       >
@@ -631,10 +756,10 @@ function AdapterSheet({
                 </FormSection>
               ) : null}
 
-              <FormSection title={t("web.setup.gateway.sections.credentials")}>
+              <FormSection title={translate("web.setup.gateway.sections.credentials")}>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
-                    label={t("web.setup.gateway.fields.app_id")}
+                    label={translate("web.setup.gateway.fields.app_id")}
                     required
                     error={fieldErrors["credentials.app_id"]}
                   >
@@ -646,8 +771,8 @@ function AdapterSheet({
                       required
                     />
                   </Field>
-                  <SecretField
-                    label={t("web.setup.gateway.fields.app_secret")}
+                  <SecretFieldInput
+                    label={translate("web.setup.gateway.fields.app_secret")}
                     value={draft.credentials.app_secret}
                     status={draft.secret_status?.app_secret}
                     onChange={value => update(["credentials", "app_secret"], value)}
@@ -661,7 +786,7 @@ function AdapterSheet({
                 <FormSection
                   title={
                     <CollapsibleTrigger className="flex w-full cursor-pointer items-center justify-between gap-3 text-left">
-                      <span>{t("web.setup.gateway.sections.advanced")}</span>
+                      <span>{translate("web.setup.gateway.sections.advanced")}</span>
                       <RiArrowDownSLine
                         className={[
                           "size-4 shrink-0 text-muted-foreground transition-transform",
@@ -673,15 +798,17 @@ function AdapterSheet({
                 >
                   <CollapsibleContent>
                     <div ref={advancedContentRef} className="grid gap-4 pt-1 md:grid-cols-3">
-                      {[
-                        "dedupe_ttl_ms",
-                        "message_context_ttl_ms",
-                        "card_action_dedupe_ttl_ms",
-                        "inline_media_max_bytes",
-                        "stream_update_interval_ms",
-                        "state_max_age_seconds",
-                      ].map(field => (
-                        <Field key={field} label={t(`web.setup.gateway.fields.${field}`)}>
+                      {(
+                        [
+                          "dedupe_ttl_ms",
+                          "message_context_ttl_ms",
+                          "card_action_dedupe_ttl_ms",
+                          "inline_media_max_bytes",
+                          "stream_update_interval_ms",
+                          "state_max_age_seconds",
+                        ] as Array<keyof AdapterAdvanced>
+                      ).map(field => (
+                        <Field key={field} label={translate(`web.setup.gateway.fields.${field}`)}>
                           <Input
                             type="number"
                             min="0"
@@ -701,7 +828,7 @@ function AdapterSheet({
         {mode === "configure" ? (
           <SheetFooter className="shrink-0">
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-              {t("web.setup.gateway.sheet.cancel")}
+              {translate("web.setup.gateway.sheet.cancel")}
             </Button>
             <Button type="button" onClick={onApply}>
               {editing ? (
@@ -711,8 +838,8 @@ function AdapterSheet({
               )}
               <span>
                 {editing
-                  ? t("web.setup.gateway.sheet.save_changes")
-                  : t("web.setup.gateway.add_adapter")}
+                  ? translate("web.setup.gateway.sheet.save_changes")
+                  : translate("web.setup.gateway.add_adapter")}
               </span>
             </Button>
           </SheetFooter>
@@ -722,7 +849,12 @@ function AdapterSheet({
   )
 }
 
-function AdapterTypeChooser({ catalog, onChoose }) {
+interface AdapterTypeChooserProps {
+  catalog: AdapterCatalogEntry[]
+  onChoose: (catalogEntry: AdapterCatalogEntry) => void
+}
+
+function AdapterTypeChooser({ catalog, onChoose }: AdapterTypeChooserProps) {
   return (
     <div
       className={[
@@ -752,7 +884,7 @@ function AdapterTypeChooser({ catalog, onChoose }) {
   )
 }
 
-function FormSection({ title, children }) {
+function FormSection({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="grid gap-3">
       <h3 className="border-b border-border pb-2 text-sm font-semibold">{title}</h3>
@@ -761,8 +893,16 @@ function FormSection({ title, children }) {
   )
 }
 
-function Field({ label, children, required = false, error }) {
+interface FieldProps {
+  label: React.ReactNode
+  children: React.ReactNode
+  required?: boolean
+  error?: string
+}
+
+function Field({ label, children, required = false, error }: FieldProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <div className="grid gap-1.5">
@@ -770,7 +910,7 @@ function Field({ label, children, required = false, error }) {
         <span>{label}</span>
         {required ? (
           <span className="text-muted-foreground">
-            {t("web.setup.gateway.required")}
+            {translate("web.setup.gateway.required")}
           </span>
         ) : null}
       </Label>
@@ -782,8 +922,25 @@ function Field({ label, children, required = false, error }) {
   )
 }
 
-function SecretField({ label, value, status, onChange, required = false, error }) {
+interface SecretFieldInputProps {
+  label: string
+  value: string
+  status: SecretStatus | undefined
+  onChange: (value: string) => void
+  required?: boolean
+  error?: string
+}
+
+function SecretFieldInput({
+  label,
+  value,
+  status,
+  onChange,
+  required = false,
+  error,
+}: SecretFieldInputProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   return (
     <Field label={label} required={required} error={error}>
@@ -791,7 +948,7 @@ function SecretField({ label, value, status, onChange, required = false, error }
         <Input
           type="password"
           value={value}
-          placeholder={status === "stored" ? t("web.setup.gateway.secret_stored") : ""}
+          placeholder={status === "stored" ? translate("web.setup.gateway.secret_stored") : ""}
           onChange={event => onChange(event.target.value)}
           autoComplete="new-password"
           aria-invalid={Boolean(error) || undefined}
@@ -799,7 +956,7 @@ function SecretField({ label, value, status, onChange, required = false, error }
         />
         {status === "stored" ? (
           <Badge variant="secondary" className="w-fit">
-            {t("web.setup.gateway.secret_stored_badge")}
+            {translate("web.setup.gateway.secret_stored_badge")}
           </Badge>
         ) : null}
       </div>
@@ -807,38 +964,53 @@ function SecretField({ label, value, status, onChange, required = false, error }
   )
 }
 
-function ConnectionBadge({ disabled, invalid, checking, connected, error }) {
+interface ConnectionBadgeProps {
+  disabled: boolean
+  invalid: boolean
+  checking: boolean
+  connected: boolean
+  error: boolean
+}
+
+function ConnectionBadge({
+  disabled,
+  invalid,
+  checking,
+  connected,
+  error,
+}: ConnectionBadgeProps) {
   const { t } = useTranslation()
+  const translate = t as Translate
 
   if (disabled) {
-    return <Badge variant="secondary">{t("web.setup.gateway.status.disabled")}</Badge>
+    return <Badge variant="secondary">{translate("web.setup.gateway.status.disabled")}</Badge>
   }
 
   if (invalid) {
-    return <Badge variant="destructive">{t("web.setup.gateway.status.invalid")}</Badge>
+    return <Badge variant="destructive">{translate("web.setup.gateway.status.invalid")}</Badge>
   }
 
   if (checking) {
-    return <Badge variant="secondary">{t("web.setup.gateway.status.checking")}</Badge>
+    return <Badge variant="secondary">{translate("web.setup.gateway.status.checking")}</Badge>
   }
 
   if (connected) {
     return (
       <Badge>
         <RiCheckboxCircleLine />
-        <span>{t("web.setup.gateway.status.connected")}</span>
+        <span>{translate("web.setup.gateway.status.connected")}</span>
       </Badge>
     )
   }
 
   if (error) {
-    return <Badge variant="destructive">{t("web.setup.gateway.status.failed")}</Badge>
+    return <Badge variant="destructive">{translate("web.setup.gateway.status.failed")}</Badge>
   }
 
-  return <Badge variant="outline">{t("web.setup.gateway.status.unchecked")}</Badge>
+  return <Badge variant="outline">{translate("web.setup.gateway.status.unchecked")}</Badge>
 }
 
-function ErrorList({ errors }) {
+function ErrorList({ errors }: { errors: AdapterError[] }) {
   if (!errors.length) return null
 
   return (
@@ -850,8 +1022,8 @@ function ErrorList({ errors }) {
   )
 }
 
-async function postJson(path, payload) {
-  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content
+async function postJson(path: string, payload: unknown): Promise<PostJsonResponse> {
+  const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content
 
   try {
     const response = await fetch(path, {
@@ -864,20 +1036,20 @@ async function postJson(path, payload) {
       body: JSON.stringify(payload),
     })
 
-    return await response.json()
+    return (await response.json()) as PostJsonResponse
   } catch (error) {
     return {
       ok: false,
-      errors: [{ message: error.message || String(error) }],
+      errors: [{ message: error instanceof Error ? error.message : String(error) }],
     }
   }
 }
 
-function normalizeEntries(entries) {
+function normalizeEntries(entries: AdapterEntry[]): AdapterEntry[] {
   return entries.map(entry => mergeEntry(entry))
 }
 
-function newEntry(catalog) {
+function newEntry(catalog: AdapterCatalogEntry[]): AdapterEntry {
   const catalogEntry = catalogEntryFor(catalog, "feishu") || catalog[0]
   const adapter = catalogEntry?.adapter || "feishu"
 
@@ -889,7 +1061,7 @@ function newEntry(catalog) {
   })
 }
 
-function nextDefaultChannelId(adapter, entries) {
+function nextDefaultChannelId(adapter: string, entries: AdapterEntry[]): string {
   const existingChannelIds = new Set(
     entries
       .map(prepareEntryForSave)
@@ -905,27 +1077,28 @@ function nextDefaultChannelId(adapter, entries) {
   return `${adapter}-${suffix}`
 }
 
-function mergeEntry(entry) {
-  const source = clone(entry || {})
-  const merged = {
-    ...clone(FALLBACK_ENTRY),
+function mergeEntry(entry: Partial<AdapterEntry>): AdapterEntry {
+  const source = clone(entry || {}) as Partial<AdapterEntry>
+  const fallback = clone(FALLBACK_ENTRY)
+  const merged: AdapterEntry = {
+    ...fallback,
     ...source,
     credentials: {
-      ...FALLBACK_ENTRY.credentials,
+      ...fallback.credentials,
       ...(source.credentials || {}),
     },
     authn: {
       external_org_members: {
-        ...FALLBACK_ENTRY.authn.external_org_members,
+        ...fallback.authn.external_org_members,
         ...(source.authn?.external_org_members || {}),
       },
     },
     advanced: {
-      ...FALLBACK_ENTRY.advanced,
+      ...fallback.advanced,
       ...(source.advanced || {}),
     },
     secret_status: {
-      ...FALLBACK_ENTRY.secret_status,
+      ...fallback.secret_status,
       ...(source.secret_status || {}),
     },
   }
@@ -937,7 +1110,7 @@ function mergeEntry(entry) {
   return merged
 }
 
-function prepareEntryForSave(entry) {
+function prepareEntryForSave(entry: AdapterEntry): AdapterEntry {
   const normalized = mergeEntry(entry)
   const channelId = normalized.channel_id.trim()
   const adapter = normalized.adapter || "feishu"
@@ -964,27 +1137,29 @@ function prepareEntryForSave(entry) {
         key,
         numberValue(value),
       ]),
-    ),
+    ) as unknown as AdapterAdvanced,
     secret_status: normalized.secret_status,
   }
 }
 
-function setPath(object, path, value) {
-  const next = clone(object)
-  let cursor = next
+function setPath<T>(object: T, path: string[], value: unknown): T {
+  const next = clone(object) as Record<string, unknown>
+  let cursor: Record<string, unknown> = next
 
   for (const key of path.slice(0, -1)) {
-    cursor[key] = isPlainObject(cursor[key]) ? { ...cursor[key] } : {}
-    cursor = cursor[key]
+    cursor[key] = isPlainObject(cursor[key])
+      ? { ...(cursor[key] as Record<string, unknown>) }
+      : {}
+    cursor = cursor[key] as Record<string, unknown>
   }
 
   cursor[path[path.length - 1]] = value
-  return next
+  return next as T
 }
 
-function validateEntries(entries, t) {
+function validateEntries(entries: AdapterEntry[], t: Translate): AdapterError[] {
   const errors = entries.flatMap(entry => validateEntry(prepareEntryForSave(entry), t))
-  const seen = new Set()
+  const seen = new Set<string>()
 
   for (const entry of entries.map(prepareEntryForSave).filter(item => item.enabled)) {
     const key = `${entry.adapter}:${entry.channel_id}`
@@ -1002,7 +1177,12 @@ function validateEntries(entries, t) {
   return errors
 }
 
-function validateDraft(entry, entries, editingIndex, t) {
+function validateDraft(
+  entry: AdapterEntry,
+  entries: AdapterEntry[],
+  editingIndex: number | null,
+  t: Translate,
+): AdapterError[] {
   const errors = validateEntry(entry, t)
   const key = `${entry.adapter}:${entry.channel_id}`
   const duplicate = entries
@@ -1026,10 +1206,10 @@ function validateDraft(entry, entries, editingIndex, t) {
   return errors
 }
 
-function validateEntry(entry, t) {
+function validateEntry(entry: AdapterEntry, t: Translate): AdapterError[] {
   if (!entry.enabled) return []
 
-  const errors = []
+  const errors: AdapterError[] = []
 
   if (!entry.channel_id.trim()) {
     errors.push({
@@ -1065,68 +1245,75 @@ function validateEntry(entry, t) {
   return errors
 }
 
-function errorsByField(errors) {
-  return errors.reduce((fields, error) => {
+function errorsByField(errors: AdapterError[]): Record<string, string> {
+  return errors.reduce<Record<string, string>>((fields, error) => {
     const field = errorField(error)
     if (field && !fields[field]) fields[field] = error.message
     return fields
   }, {})
 }
 
-function errorsWithoutFields(errors) {
+function errorsWithoutFields(errors: AdapterError[]): AdapterError[] {
   return errors.filter(error => !errorField(error))
 }
 
-function errorField(error) {
+function errorField(error: AdapterError): string | undefined {
   return error.field || error.details?.field || error.details?.field_path
 }
 
-function hasSecret(entry, field) {
+function hasSecret(entry: AdapterEntry, field: SecretField): boolean {
   return Boolean(entry.credentials[field]?.trim() || entry.secret_status?.[field] === "stored")
 }
 
-function numberValue(value) {
-  const parsed = Number.parseInt(value, 10)
+function numberValue(value: unknown): number {
+  const parsed = Number.parseInt(String(value), 10)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
 }
 
-function nextEntryId(adapter) {
+function nextEntryId(adapter: string): string {
   if (globalThis.crypto?.randomUUID) return `${adapter}:${globalThis.crypto.randomUUID()}`
 
   return `${adapter}:${Date.now()}:${Math.random().toString(36).slice(2)}`
 }
 
-function catalogEntryFor(catalog, adapter) {
+function catalogEntryFor(
+  catalog: AdapterCatalogEntry[],
+  adapter: string,
+): AdapterCatalogEntry | undefined {
   return catalog.find(item => item.adapter === adapter)
 }
 
-function configDocUrl(entry, catalog) {
+function configDocUrl(entry: AdapterEntry, catalog: AdapterCatalogEntry[]): string | undefined {
   return catalogEntryFor(catalog, entry.adapter)?.config_doc_url || entry.config_doc_url
 }
 
-function connectorSupportsAuthnPolicy(adapter, catalog, policyType) {
+function connectorSupportsAuthnPolicy(
+  adapter: string,
+  catalog: AdapterCatalogEntry[],
+  policyType: string,
+): boolean {
   const policies = catalogEntryFor(catalog, adapter)?.authn_policies || []
 
   return policies.some(policy => policy.type === policyType)
 }
 
-function adapterLabel(adapter, catalog = []) {
+function adapterLabel(adapter: string, catalog: AdapterCatalogEntry[] = []): string {
   return catalogEntryFor(catalog, adapter)?.label || (adapter === "feishu" ? "Feishu / Lark" : adapter)
 }
 
-function transportLabel(_adapter) {
+function transportLabel(_adapter: string): string {
   return "WebSocket"
 }
 
-function domainLabel(domain) {
+function domainLabel(domain: string): string {
   if (domain === "lark") return "Lark"
   return "Feishu"
 }
 
-function clone(value) {
-  return JSON.parse(JSON.stringify(value))
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }

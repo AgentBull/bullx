@@ -6,7 +6,19 @@ import logoDark from "@/assets/logo-dark.svg"
 
 const BACKGROUND_IMAGE = `url(${backgroundImageUrl})`
 
-export default function SetupLayout({ title, appName = "BullX", headerActions, children }) {
+interface SetupLayoutProps {
+  title: string
+  appName?: string
+  headerActions?: React.ReactNode
+  children?: React.ReactNode
+}
+
+export default function SetupLayout({
+  title,
+  appName = "BullX",
+  headerActions,
+  children,
+}: SetupLayoutProps) {
   const { t } = useTranslation()
 
   return (
