@@ -41,34 +41,23 @@ defmodule BullX.Config.WriterTest do
     assert :ok = BullX.Config.Writer.delete("writer.nonexistent")
   end
 
-  test "put_secret/2 stores ciphertext in database and returns plaintext from ETS" do
-    assert :ok = BullX.Config.Writer.put_secret("writer.secret1", "my-secret-value")
+  test "put/2 encrypts and stores as :secret for keys declared with secret: true" do
+    assert :ok = BullX.Config.Writer.put("bullx.test_secret", "my-sensitive-value")
 
-    row = BullX.Repo.get!(BullX.Config.AppConfig, "writer.secret1")
+    row = BullX.Repo.get!(BullX.Config.AppConfig, "bullx.test_secret")
     assert row.type == :secret
-    assert row.value != "my-secret-value"
+    assert row.value != "my-sensitive-value"
     assert String.contains?(row.value, ".")
 
-    assert {:ok, "my-secret-value"} = BullX.Config.Cache.get_raw("writer.secret1")
+    assert {:ok, "my-sensitive-value"} = BullX.Config.Cache.get_raw("bullx.test_secret")
   end
 
-  test "put_secret/2 updates an existing secret on conflict" do
-    assert :ok = BullX.Config.Writer.put_secret("writer.secret2", "first-secret")
-    assert :ok = BullX.Config.Writer.put_secret("writer.secret2", "second-secret")
+  test "put/2 re-encrypts on overwrite of a secret key" do
+    assert :ok = BullX.Config.Writer.put("bullx.test_secret", "first")
+    assert :ok = BullX.Config.Writer.put("bullx.test_secret", "second")
 
-    row = BullX.Repo.get!(BullX.Config.AppConfig, "writer.secret2")
+    row = BullX.Repo.get!(BullX.Config.AppConfig, "bullx.test_secret")
     assert row.type == :secret
-    assert {:ok, "second-secret"} = BullX.Config.Cache.get_raw("writer.secret2")
-  end
-
-  test "put_secret/2 overwrites a plain key and changes its type to secret" do
-    assert :ok = BullX.Config.Writer.put("writer.upgrade", "plain-value")
-    assert {:ok, "plain-value"} = BullX.Config.Cache.get_raw("writer.upgrade")
-
-    assert :ok = BullX.Config.Writer.put_secret("writer.upgrade", "secret-value")
-
-    row = BullX.Repo.get!(BullX.Config.AppConfig, "writer.upgrade")
-    assert row.type == :secret
-    assert {:ok, "secret-value"} = BullX.Config.Cache.get_raw("writer.upgrade")
+    assert {:ok, "second"} = BullX.Config.Cache.get_raw("bullx.test_secret")
   end
 end

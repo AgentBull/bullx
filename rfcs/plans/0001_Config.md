@@ -232,14 +232,14 @@ At the bootstrap phase, the same dotenv load order is also used by the shared co
 ### 4.2 Out of scope
 
 - A control-plane UI for browsing or editing config values.
-- Secret encryption, KMS integration, or any other secret-management feature.
+- KMS integration or external secret-management services.
 - PostgreSQL `LISTEN/NOTIFY`.
 - Cross-node cache invalidation across a multi-node BullX cluster. BullX does not support multi-node deployments in this RFC; single-node operation is the only supported topology. Multi-node is deferred to a future RFC.
 - Migrating every existing BullX setting to the new runtime DSL.
 - A metadata catalog of all editable keys for operators.
 - A full declaration registry that lets arbitrary raw database writes be validated against all known setting schemas before persistence.
 
-The low-level writer in this RFC stores raw strings. Type casting and Zoi validation happen on **read** through the runtime resolution pipeline, and on **bootstrap parse** through the shared config helper.
+The low-level writer stores raw strings for plain settings and AEAD-encrypted ciphertext for secret settings. Type casting and Zoi validation happen on **read** through the runtime resolution pipeline, and on **bootstrap parse** through the shared config helper.
 
 ## 5. Dependencies
 
@@ -264,7 +264,9 @@ lib/bullx/
     ├── app_config.ex                     (NEW — Ecto schema)
     ├── application_binding.ex            (NEW — application config Skogsra binding)
     ├── cache.ex                          (NEW — ETS-backed cache process)
+    ├── crypto.ex                         (NEW — AEAD encrypt/decrypt for secret values)
     ├── database_binding.ex               (NEW — PostgreSQL/ETS Skogsra binding)
+    ├── secret_keys.ex                    (NEW — compile-time secret key registry)
     ├── secrets.ex                        (NEW — bootstrap-only declarations in the shared DSL)
     ├── supervisor.ex                     (NEW — top-level config supervisor)
     ├── system_binding.ex                 (NEW — strict OS-env Skogsra binding)
@@ -329,17 +331,31 @@ defmodule BullX.Config do
   Runtime settings declared through this namespace resolve in the following
   order: PostgreSQL override, OS environment, application config, then code
   default.
+
+  Settings declared with `secret: true` are stored encrypted at rest.
+  `BullX.Config.put/2` encrypts transparently; reads from ETS always return
+  plaintext.
   """
 
   defmacro __using__(_opts) do
     quote do
       use Skogsra
       import BullX.Config, only: [bullx_env: 1, bullx_env: 2]
+      Module.register_attribute(__MODULE__, :bullx_secret_keys, accumulate: true)
+      @before_compile BullX.Config
+    end
+  end
+
+  defmacro __before_compile__(env) do
+    secret_keys = Module.get_attribute(env.module, :bullx_secret_keys) || []
+    quote do
+      def __bullx_secret_keys__, do: unquote(secret_keys)
     end
   end
 
   defmacro bullx_env(name, opts \\ []) do
     {key, opts} = Keyword.pop(opts, :key, name)
+    {secret, opts} = Keyword.pop(opts, :secret, false)
 
     merged_opts =
       Keyword.merge(
@@ -355,8 +371,16 @@ defmodule BullX.Config do
         opts
       )
 
-    quote bind_quoted: [name: name, key: key, merged_opts: merged_opts] do
-      app_env(name, :bullx, key, merged_opts)
+    db_key = compute_db_key(key)
+
+    secret_ast =
+      if secret do
+        quote do: @bullx_secret_keys(unquote(db_key))
+      end
+
+    quote do
+      unquote(secret_ast)
+      app_env(unquote(name), :bullx, unquote(key), unquote(merged_opts))
     end
   end
 
@@ -364,6 +388,11 @@ defmodule BullX.Config do
   def delete(key), do: BullX.Config.Writer.delete(key)
   def refresh(key), do: BullX.Config.Cache.refresh(key)
   def refresh_all, do: BullX.Config.Cache.refresh_all()
+
+  defp compute_db_key(key) do
+    key_parts = key |> List.wrap() |> Enum.map(&Atom.to_string/1)
+    Enum.join(["bullx" | key_parts], ".")
+  end
 end
 ```
 
@@ -373,6 +402,7 @@ Important constraints:
 - Future runtime config declaration modules must `use BullX.Config`, not raw `use Skogsra`.
 - The public BullX DSL is intentionally **single-name**: the generated function name and BullX config key are the same by default. An optional `key:` escape hatch exists for rare cases, but redundant `function_name, keys` pairs are not the normal authoring model.
 - The DSL must support an optional `zoi:` option whose value is a Zoi schema or a zero-arity function returning a Zoi schema.
+- The DSL must support an optional `secret: true` flag. When set, `BullX.Config.put/2` encrypts the value before storage and the cache decrypts it on load. The encryption is transparent to all consumers — reads always return plaintext.
 - This RFC does **not** add production settings yet; end-to-end behavior is proven through a test-only declaration module in `test/support`.
 
 Example declaration:
@@ -471,12 +501,13 @@ defmodule BullX.Config.AppConfig do
   @primary_key {:key, :string, autogenerate: false}
   schema "app_configs" do
     field :value, :string
+    field :type, Ecto.Enum, values: [:plain, :secret], default: :plain
     timestamps(type: :utc_datetime)
   end
 
   def changeset(config, attrs) do
     config
-    |> cast(attrs, [:key, :value])
+    |> cast(attrs, [:key, :value, :type])
     |> validate_required([:key, :value])
   end
 end
@@ -487,9 +518,26 @@ The migration creates:
 - table name: `app_configs`
 - primary key: `key`, type `:text`
 - `value`, type `:text`, `null: false`
+- `type`, a PostgreSQL enum `app_config_type` with values `'plain'` and `'secret'`, `null: false`, `default: 'plain'`
 - `inserted_at` and `updated_at`, type `:utc_datetime`
 
-The migration must be generated via `mix ecto.gen.migration create_app_configs`.
+### 7.5a `BullX.Config.Crypto`
+
+`lib/bullx/config/crypto.ex` provides AEAD encrypt/decrypt for secret `app_configs` rows.
+
+- Uses `BullX.Ext.aead_encrypt/2` and `BullX.Ext.aead_decrypt/2` (XChaCha20-Poly1305 NIF).
+- Derives a per-key cipher key using `BullX.Ext.derive_key/3` with `BULLX_SECRET_BASE`, sub-key prefix `"app_configs/<db_key>"`, and context `"value"`.
+- Returns `{:ok, binary()}` on success, `{:error, reason}` on failure.
+
+### 7.5b `BullX.Config.SecretKeys`
+
+`lib/bullx/config/secret_keys.ex` provides a runtime query for whether a DB key was declared with `secret: true`.
+
+- Lazily scans `:code.all_loaded()` for any module under the `BullX.Config.*` namespace that exports `__bullx_secret_keys__/0`.
+- Collects all returned key strings into a `MapSet` cached in `:persistent_term`.
+- Exposes `secret?(key) :: boolean()`.
+
+The `__bullx_secret_keys__/0` function is generated on every `use BullX.Config` module by the `@before_compile BullX.Config` callback. It returns the list of DB key strings that were declared with `secret: true` in that module.
 
 ### 7.6 `BullX.Config.Cache`
 
@@ -520,6 +568,7 @@ Implementation notes:
 - Because the ETS table is `:protected`, only the owning `Cache` process may write to it. `refresh/1` and `refresh_all/0` must be implemented as `GenServer.call/2` so that callers can rely on the refresh having completed before the call returns.
 - `get_raw/1` must return `:error` rather than raising if the ETS table does not yet exist (for example during the window between a `Cache` crash and its restart). Concretely, wrap the `:ets.lookup` call in a `try/rescue` that catches `ArgumentError` and returns `:error`.
 - If the database query in `init/1` fails — for example because the `app_configs` table does not yet exist when the application starts before migrations have run — the cache must log a warning and start with an empty ETS table rather than crashing. In the degraded state the database source is silently absent; every variable resolves through OS environment, application config, and then its code default until the application is restarted after a successful migration.
+- When loading a row with `type: :secret`, the Cache must decrypt the stored ciphertext using `BullX.Config.Crypto.decrypt/2` before writing the plaintext to ETS. ETS always holds plaintext; all consumers read plaintext regardless of how the value is stored. If decryption fails, the key is deleted from ETS (not inserted with ciphertext) and a warning is logged.
 
 ### 7.7 `BullX.Config.DatabaseBinding`
 
@@ -620,20 +669,23 @@ Required API:
 Required behavior:
 
 - `put/2`
-  - upserts into `app_configs`
-  - replaces `value` and `updated_at` on conflict
+  - checks `BullX.Config.SecretKeys.secret?/1` to determine storage type
+  - if secret: encrypts value with `BullX.Config.Crypto.encrypt/2`, stores ciphertext, sets `type: :secret`
+  - if plain: stores value as-is, sets `type: :plain`
+  - upserts into `app_configs` (conflict target: primary key)
+  - replaces `value`, `type`, and `updated_at` on conflict
   - refreshes the key in ETS after commit
 - `delete/1`
   - deletes the row by primary key
   - refreshes the key in ETS after delete
+
+The encryption decision is driven entirely by the `bullx_env` declaration (`secret: true`). Call sites always use `BullX.Config.put/2` and do not need to know whether a key is secret.
 
 Important non-goal:
 
 - `Writer` does not validate the value against a declared type at write time.
 - `Writer` does not resolve Zoi schemas before persistence.
 - Invalid strings may be persisted; they are ignored at read time by the bindings.
-
-That choice keeps the write path generic and leaves type semantics attached to code-defined settings rather than to free-form database rows.
 
 **Known limitation:** `put/2` and `delete/1` call `Cache.refresh/1` after the database operation. If `BullX.Config.Cache` is in a crash-restart cycle at that moment, the refresh call will fail and the database and ETS cache will be transiently inconsistent. The inconsistency self-heals on the next `Cache` restart because `init/1` reloads all rows from PostgreSQL. No retry or rollback logic is required in `Writer`.
 

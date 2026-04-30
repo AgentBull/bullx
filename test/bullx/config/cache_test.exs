@@ -40,21 +40,21 @@ defmodule BullX.Config.CacheTest do
     assert {:ok, "2"} = BullX.Config.Cache.get_raw("test.reload_b")
   end
 
-  test "secret rows are decrypted transparently on refresh" do
-    BullX.Config.Writer.put_secret("test.cache_secret", "sensitive-value")
+  test "secret rows declared via bullx_env are decrypted transparently on refresh" do
+    BullX.Config.Writer.put("bullx.test_secret", "sensitive-value")
 
-    row = BullX.Repo.get!(BullX.Config.AppConfig, "test.cache_secret")
+    row = BullX.Repo.get!(BullX.Config.AppConfig, "bullx.test_secret")
     assert row.type == :secret
     assert row.value != "sensitive-value"
 
-    assert {:ok, "sensitive-value"} = BullX.Config.Cache.get_raw("test.cache_secret")
+    assert {:ok, "sensitive-value"} = BullX.Config.Cache.get_raw("bullx.test_secret")
   end
 
-  test "secret rows are decrypted transparently on refresh_all" do
-    BullX.Config.Writer.put_secret("test.cache_secret_all", "another-secret")
+  test "secret rows declared via bullx_env are decrypted transparently on refresh_all" do
+    BullX.Config.Writer.put("bullx.test_secret", "another-secret")
 
     BullX.Config.Cache.refresh_all()
 
-    assert {:ok, "another-secret"} = BullX.Config.Cache.get_raw("test.cache_secret_all")
+    assert {:ok, "another-secret"} = BullX.Config.Cache.get_raw("bullx.test_secret")
   end
 end

@@ -3,15 +3,15 @@ defmodule BullX.Config.Writer do
 
   @req_llm_prefix "bullx.req_llm."
 
-  @doc "Upserts a raw string value into `app_configs` as plaintext and refreshes ETS."
+  @doc "Upserts a string value into `app_configs` and refreshes ETS. Values for keys
+  declared with `secret: true` are automatically encrypted before storage."
   def put(key, value) when is_binary(key) and is_binary(value) do
-    do_put(key, value, :plain)
-  end
-
-  @doc "Encrypts `value` and upserts it into `app_configs` as a secret, then refreshes ETS."
-  def put_secret(key, value) when is_binary(key) and is_binary(value) do
-    with {:ok, ciphertext} <- BullX.Config.Crypto.encrypt(value, key) do
-      do_put(key, ciphertext, :secret)
+    if BullX.Config.SecretKeys.secret?(key) do
+      with {:ok, ciphertext} <- BullX.Config.Crypto.encrypt(value, key) do
+        do_put(key, ciphertext, :secret)
+      end
+    else
+      do_put(key, value, :plain)
     end
   end
 

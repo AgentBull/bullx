@@ -45,7 +45,8 @@ defmodule BullX.Config.Gateway do
   bullx_env(:gateway_adapters,
     key: [:gateway, :adapters],
     type: BullX.Config.Gateway.AdapterList,
-    default: []
+    default: [],
+    secret: true
   )
 
   @envdoc false

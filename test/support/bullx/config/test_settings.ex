@@ -20,4 +20,11 @@ defmodule BullX.Config.TestSettings do
     default: "safe",
     zoi: Zoi.enum(["safe", "fast", "strict"])
   )
+
+  @envdoc false
+  bullx_env(:test_secret,
+    type: :binary,
+    default: nil,
+    secret: true
+  )
 end
