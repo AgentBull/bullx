@@ -96,6 +96,8 @@ defmodule BullX.Config.Cache do
               :ets.insert(@table, {key, plaintext})
 
             {:error, reason} ->
+              :ets.delete(@table, key)
+
               Logger.warning(
                 "BullX.Config.Cache: failed to decrypt key #{inspect(key)}: #{inspect(reason)}"
               )
