@@ -65,8 +65,16 @@ defmodule BullX.Config.Cache do
       rows = BullX.Repo.all(BullX.Config.AppConfig)
       :ets.delete_all_objects(@table)
 
-      Enum.each(rows, fn %BullX.Config.AppConfig{key: key, value: value} ->
-        :ets.insert(@table, {key, value})
+      Enum.each(rows, fn %BullX.Config.AppConfig{key: key, value: value, type: type} ->
+        case decrypt_if_secret(value, type, key) do
+          {:ok, plaintext} ->
+            :ets.insert(@table, {key, plaintext})
+
+          {:error, reason} ->
+            Logger.warning(
+              "BullX.Config.Cache: failed to decrypt key #{inspect(key)}: #{inspect(reason)}"
+            )
+        end
       end)
     rescue
       e ->
@@ -79,8 +87,19 @@ defmodule BullX.Config.Cache do
   defp do_refresh_key(key) do
     try do
       case BullX.Repo.get(BullX.Config.AppConfig, key) do
-        nil -> :ets.delete(@table, key)
-        %BullX.Config.AppConfig{value: value} -> :ets.insert(@table, {key, value})
+        nil ->
+          :ets.delete(@table, key)
+
+        %BullX.Config.AppConfig{value: value, type: type} ->
+          case decrypt_if_secret(value, type, key) do
+            {:ok, plaintext} ->
+              :ets.insert(@table, {key, plaintext})
+
+            {:error, reason} ->
+              Logger.warning(
+                "BullX.Config.Cache: failed to decrypt key #{inspect(key)}: #{inspect(reason)}"
+              )
+          end
       end
     rescue
       e ->
@@ -89,4 +108,7 @@ defmodule BullX.Config.Cache do
         )
     end
   end
+
+  defp decrypt_if_secret(value, :secret, key), do: BullX.Config.Crypto.decrypt(value, key)
+  defp decrypt_if_secret(value, _type, _key), do: {:ok, value}
 end

@@ -62,7 +62,7 @@ defmodule BullXWeb.SetupGatewayController do
          {:ok, encoded, entries} <-
            AdapterConfig.encode_for_storage(adapters, existing_entries: existing_entries),
          :ok <- verify_connectivity_tokens(conn, entries, params),
-         :ok <- BullX.Config.put(AdapterConfig.config_key(), encoded),
+         :ok <- BullX.Config.put_secret(AdapterConfig.config_key(), encoded),
          :ok <- reconcile_gateway_adapters(entries),
          :ok <- sync_authn_match_rules(entries) do
       json(conn, %{ok: true, redirect_to: ~p"/setup/activate-owner"})

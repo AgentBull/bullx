@@ -11,7 +11,7 @@ defmodule BullX.Config.WriterTest do
   test "put/2 upserts into database and populates ETS" do
     assert :ok = BullX.Config.Writer.put("writer.key1", "val1")
 
-    assert %BullX.Config.AppConfig{value: "val1"} =
+    assert %BullX.Config.AppConfig{value: "val1", type: :plain} =
              BullX.Repo.get!(BullX.Config.AppConfig, "writer.key1")
 
     assert {:ok, "val1"} = BullX.Config.Cache.get_raw("writer.key1")
@@ -39,5 +39,36 @@ defmodule BullX.Config.WriterTest do
 
   test "delete/1 is a no-op for nonexistent keys" do
     assert :ok = BullX.Config.Writer.delete("writer.nonexistent")
+  end
+
+  test "put_secret/2 stores ciphertext in database and returns plaintext from ETS" do
+    assert :ok = BullX.Config.Writer.put_secret("writer.secret1", "my-secret-value")
+
+    row = BullX.Repo.get!(BullX.Config.AppConfig, "writer.secret1")
+    assert row.type == :secret
+    assert row.value != "my-secret-value"
+    assert String.contains?(row.value, ".")
+
+    assert {:ok, "my-secret-value"} = BullX.Config.Cache.get_raw("writer.secret1")
+  end
+
+  test "put_secret/2 updates an existing secret on conflict" do
+    assert :ok = BullX.Config.Writer.put_secret("writer.secret2", "first-secret")
+    assert :ok = BullX.Config.Writer.put_secret("writer.secret2", "second-secret")
+
+    row = BullX.Repo.get!(BullX.Config.AppConfig, "writer.secret2")
+    assert row.type == :secret
+    assert {:ok, "second-secret"} = BullX.Config.Cache.get_raw("writer.secret2")
+  end
+
+  test "put_secret/2 overwrites a plain key and changes its type to secret" do
+    assert :ok = BullX.Config.Writer.put("writer.upgrade", "plain-value")
+    assert {:ok, "plain-value"} = BullX.Config.Cache.get_raw("writer.upgrade")
+
+    assert :ok = BullX.Config.Writer.put_secret("writer.upgrade", "secret-value")
+
+    row = BullX.Repo.get!(BullX.Config.AppConfig, "writer.upgrade")
+    assert row.type == :secret
+    assert {:ok, "secret-value"} = BullX.Config.Cache.get_raw("writer.upgrade")
   end
 end
